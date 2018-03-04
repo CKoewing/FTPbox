@@ -12,6 +12,7 @@
 
 using System;
 using System.Runtime.Serialization;
+using System.Text;
 using Newtonsoft.Json;
 
 namespace FTPboxLib
@@ -35,6 +36,12 @@ namespace FTPboxLib
 
         public string HomePath { get; set; }
 
+        public Encoding Charset
+        {
+            get { return Account.CharacterEncoding != null ? Encoding.GetEncoding(Account.CharacterEncoding) : null; }
+            set { Account.CharacterEncoding = value.HeaderName; }
+        }
+
         public bool AskForPassword = false;
 
         #endregion
@@ -43,7 +50,7 @@ namespace FTPboxLib
 
 	    public void AddAccount(string host, string user, string pass, int port)
 	    {
-	        Account = new Account()
+	        Account = new Account
 	        {
                 Host = host,
                 Username = user,
@@ -56,7 +63,7 @@ namespace FTPboxLib
 
 	    public void AddPaths(string remote, string local, string http)
 	    {
-            Paths = new Paths()
+            Paths = new Paths
             {
                 Remote = remote,
 	            Local = local, 
@@ -74,25 +81,19 @@ namespace FTPboxLib
 
         #region Serialization
 
-        private string tmpPassword = string.Empty;
+        private string _tmpPassword = string.Empty;
 
         [OnSerializing]
         internal void OnSerializing(StreamingContext context)
         {
-            tmpPassword = Account.Password;
-            if (AskForPassword)
-                Account.Password = string.Empty;
-            else
-                Account.Password = Common.Encrypt(Account.Password);
+            _tmpPassword = Account.Password;
+            Account.Password = AskForPassword ? string.Empty : Common.Encrypt(Account.Password);
         }
 
         [OnSerialized]
         internal void OnSerialized(StreamingContext context)
         {
-            if (AskForPassword)
-                Account.Password = tmpPassword;
-            else
-                Account.Password = Common.Decrypt(Account.Password);
+            Account.Password = AskForPassword ? _tmpPassword : Common.Decrypt(Account.Password);
         }
 
         [OnDeserialized]
@@ -116,6 +117,11 @@ namespace FTPboxLib
         public int SyncFrequency { get; set; }
         public string PrivateKeyFile { get; set; }
         public long KeepAliveInterval = 10;
+        public SyncDirection SyncDirection = SyncDirection.Both;
+        public string TempFilePrefix = "~ftpb_";
+        public string CharacterEncoding = null;
+        public HashingAlgorithm FileHashingAlgorithm = HashingAlgorithm.ServerDefaultHash;
+        public string ForcePermissions = string.Empty;
     }
 
     public class Paths

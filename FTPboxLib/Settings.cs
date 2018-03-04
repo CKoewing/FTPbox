@@ -12,10 +12,9 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.IO;
+using System.Linq;
 using Newtonsoft.Json;
-using Formatting = Newtonsoft.Json.Formatting;
 
 namespace FTPboxLib
 {
@@ -25,9 +24,9 @@ namespace FTPboxLib
         #region Fields
 
         // Paths to our configuration files
-        private static readonly string confProfiles = Path.Combine(Common.AppdataFolder, "profiles.conf");
-        private static readonly string confGeneral = Path.Combine(Common.AppdataFolder, "general.conf");
-        private static readonly string confCertificates = Path.Combine(Common.AppdataFolder, "trusted_certificates.conf");
+        private static readonly string ConfProfiles = Path.Combine(Common.AppdataFolder, "profiles.conf");
+        private static readonly string ConfGeneral = Path.Combine(Common.AppdataFolder, "general.conf");
+        private static readonly string ConfCertificates = Path.Combine(Common.AppdataFolder, "trusted_certificates.conf");
 
         public static SettingsGeneral General;
         public static List<AccountController> Profiles;
@@ -42,9 +41,9 @@ namespace FTPboxLib
 
         public static void Load()
         {
-            Log.Write(l.Debug, "Settings file path: {0}", confGeneral);
-            Log.Write(l.Debug, "Profiles file path: {0}", confProfiles);
-            Log.Write(l.Debug, "Certificates file path: {0}", confCertificates);
+            Log.Write(l.Debug, "Settings file path: {0}", ConfGeneral);
+            Log.Write(l.Debug, "Profiles file path: {0}", ConfProfiles);
+            Log.Write(l.Debug, "Certificates file path: {0}", ConfCertificates);
 
             if (!Directory.Exists(Common.AppdataFolder)) Directory.CreateDirectory(Common.AppdataFolder);
 
@@ -54,25 +53,44 @@ namespace FTPboxLib
 
             Profiles.Add(new AccountController());
 
-            if (!File.Exists(confGeneral)) return;
-            // Load General Settings
-            string config = File.ReadAllText(confGeneral);
-            if (!String.IsNullOrWhiteSpace(config))
-                General = (SettingsGeneral)JsonConvert.DeserializeObject(config, typeof(SettingsGeneral));
+            if (File.Exists(ConfGeneral))
+            {
+                // Load General Settings
+                var config = File.ReadAllText(ConfGeneral);
+                if (!string.IsNullOrWhiteSpace(config))
+                    General = (SettingsGeneral)JsonConvert.DeserializeObject(config, typeof(SettingsGeneral));
+            }
+            else
+            {
+                File.Create(ConfGeneral);
+            }
             
-            if (!File.Exists(confProfiles)) return;
-            // Load Profiles
-            config = File.ReadAllText(confProfiles);
-            if (!String.IsNullOrWhiteSpace(config))
-                Profiles = (List<AccountController>)JsonConvert.DeserializeObject(config, typeof(List<AccountController>));
+            
+            if (File.Exists(ConfProfiles))
+            {
+                // Load Profiles
+                var config = File.ReadAllText(ConfProfiles);
+                if (!string.IsNullOrWhiteSpace(config))
+                    Profiles = (List<AccountController>)JsonConvert.DeserializeObject(config, typeof(List<AccountController>));
+            }
+            else
+            {
+                File.Create(ConfProfiles);
+            }
 
-            //TODO: Profile.Load();
+            DefaultProfile.InitClient();
 
-            if (!File.Exists(confCertificates)) return;
-            // Load trusted certificates
-            config = File.ReadAllText(confCertificates);
-            if (!String.IsNullOrWhiteSpace(config))
-                TrustedCertificates = (List<string>)JsonConvert.DeserializeObject(config, typeof(List<string>));
+            if (File.Exists(ConfCertificates))
+            {
+                // Load trusted certificates
+                var config = File.ReadAllText(ConfCertificates);
+                if (!string.IsNullOrWhiteSpace(config))
+                    TrustedCertificates = (List<string>)JsonConvert.DeserializeObject(config, typeof(List<string>));
+            }
+            else
+            {
+                File.Create(ConfCertificates);
+            }
 
             Log.Write(l.Info, "Settings Loaded.");
         }
@@ -94,9 +112,9 @@ namespace FTPboxLib
         /// </summary>
         public static void SaveGeneral()
         {
-            string config_gen = JsonConvert.SerializeObject(General, Formatting.Indented);
+            var configGen = JsonConvert.SerializeObject(General, Formatting.Indented);
 
-            File.WriteAllText(confGeneral, config_gen);
+            File.WriteAllText(ConfGeneral, configGen);
         }
 
         /// <summary>
@@ -111,9 +129,16 @@ namespace FTPboxLib
                 Profiles.Add(def);
             else
                 Profiles[General.DefaultProfile] = def;
-
-            string config_prof = JsonConvert.SerializeObject(Profiles, Formatting.Indented);
-            File.WriteAllText(confProfiles, config_prof);
+            try
+            {
+                var configProf = JsonConvert.SerializeObject(Profiles, Formatting.Indented);
+                File.WriteAllText(ConfProfiles, configProf);
+                Log.Write(l.Info, "Saved profile settings");
+            }
+            catch(Exception ex)
+            {
+                ex.LogException();
+            }
         }
 
         /// <summary>
@@ -122,7 +147,7 @@ namespace FTPboxLib
         public static void SaveCertificates()
         {
             var conf = JsonConvert.SerializeObject(TrustedCertificates, Formatting.Indented);
-            File.WriteAllText(confCertificates, conf);
+            File.WriteAllText(ConfCertificates, conf);
         }
 
         /// <summary>
@@ -154,11 +179,11 @@ namespace FTPboxLib
             SaveGeneral();
             if (Profiles.Count == 0)
             {
-                File.Delete(confProfiles);
+                File.Delete(ConfProfiles);
                 return;
             }
-            string config_prof = JsonConvert.SerializeObject(Profiles, Formatting.Indented);
-            File.WriteAllText(confProfiles, config_prof);
+            var config_prof = JsonConvert.SerializeObject(Profiles, Formatting.Indented);
+            File.WriteAllText(ConfProfiles, config_prof);
         }
 
         #endregion
@@ -172,24 +197,19 @@ namespace FTPboxLib
         {
             get
             {
-                if (Profiles.Count <= General.DefaultProfile)
-                    return new AccountController();
-
-                return Profiles[General.DefaultProfile];
+                return Profiles.Count <= General.DefaultProfile ? new AccountController() : Profiles[General.DefaultProfile];
             }
             set
             {
                 Profiles[General.DefaultProfile] = value;
                 SaveProfile();
             }
-        }        
-
-        public static string[] ProfileTitles
-        {
-            get { return Profiles.Select(p => String.Format("{0}@{1}", p.Account.Username, p.Account.Host)).ToArray(); }
         }
 
-        #endregion        
+        public static string[] ProfileTitles 
+            => Profiles.Select(p => $"{p.Account.Username}@{p.Account.Host}").ToArray();
+
+        #endregion
     }
 
     [JsonObject]
@@ -205,8 +225,10 @@ namespace FTPboxLib
         
         public int UploadLimit = 0;
 
-        public int DefaultProfile = 0;
+        public int DefaultProfile;
 
         public bool EnableLogging = true;
+
+        public bool AddContextMenu = true;
     }
 }

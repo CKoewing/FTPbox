@@ -41,6 +41,7 @@
             this.rCopy2Clipboard = new System.Windows.Forms.RadioButton();
             this.rOpenInBrowser = new System.Windows.Forms.RadioButton();
             this.gApp = new System.Windows.Forms.GroupBox();
+            this.chkShellMenus = new System.Windows.Forms.CheckBox();
             this.bBrowseLogs = new System.Windows.Forms.Button();
             this.chkEnableLogging = new System.Windows.Forms.CheckBox();
             this.chkShowNots = new System.Windows.Forms.CheckBox();
@@ -50,6 +51,12 @@
             this.bAddAccount = new System.Windows.Forms.Button();
             this.cProfiles = new System.Windows.Forms.ComboBox();
             this.gAccount = new System.Windows.Forms.GroupBox();
+            this.tTempPrefix = new System.Windows.Forms.TextBox();
+            this.labTempPrefix = new System.Windows.Forms.Label();
+            this.rBothWaySync = new System.Windows.Forms.RadioButton();
+            this.labWayOfSync = new System.Windows.Forms.Label();
+            this.rRemoteToLocalOnly = new System.Windows.Forms.RadioButton();
+            this.rLocalToRemoteOnly = new System.Windows.Forms.RadioButton();
             this.labViewInBrowser = new System.Windows.Forms.LinkLabel();
             this.chkWebInt = new System.Windows.Forms.CheckBox();
             this.bConfigureAccount = new System.Windows.Forms.Button();
@@ -105,12 +112,6 @@
             this.trayMenu = new System.Windows.Forms.ContextMenuStrip(this.components);
             this.optionsToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.toolStripSeparator2 = new System.Windows.Forms.ToolStripSeparator();
-            this.recentFilesToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
-            this.toolStripMenuItem1 = new System.Windows.Forms.ToolStripMenuItem();
-            this.toolStripMenuItem2 = new System.Windows.Forms.ToolStripMenuItem();
-            this.toolStripMenuItem3 = new System.Windows.Forms.ToolStripMenuItem();
-            this.toolStripMenuItem4 = new System.Windows.Forms.ToolStripMenuItem();
-            this.toolStripMenuItem5 = new System.Windows.Forms.ToolStripMenuItem();
             this.SyncToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.toolStripSeparator1 = new System.Windows.Forms.ToolStripSeparator();
             this.aboutToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
@@ -169,7 +170,7 @@
             // 
             this.gLanguage.Controls.Add(this.bTranslate);
             this.gLanguage.Controls.Add(this.cLanguages);
-            this.gLanguage.Location = new System.Drawing.Point(8, 221);
+            this.gLanguage.Location = new System.Drawing.Point(8, 242);
             this.gLanguage.Name = "gLanguage";
             this.gLanguage.Size = new System.Drawing.Size(449, 54);
             this.gLanguage.TabIndex = 13;
@@ -188,8 +189,8 @@
             // 
             // cLanguages
             // 
-            this.cLanguages.AccessibleDescription = "";
-            this.cLanguages.AccessibleName = "Encryption";
+            this.cLanguages.AccessibleDescription = "select the language of the application";
+            this.cLanguages.AccessibleName = "Language";
             this.cLanguages.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
             this.cLanguages.FormattingEnabled = true;
             this.cLanguages.Items.AddRange(new object[] {
@@ -265,19 +266,32 @@
             // gApp
             // 
             this.gApp.AccessibleDescription = "";
+            this.gApp.Controls.Add(this.chkShellMenus);
             this.gApp.Controls.Add(this.bBrowseLogs);
             this.gApp.Controls.Add(this.chkEnableLogging);
             this.gApp.Controls.Add(this.chkShowNots);
             this.gApp.Controls.Add(this.chkStartUp);
             this.gApp.Location = new System.Drawing.Point(8, 123);
             this.gApp.Name = "gApp";
-            this.gApp.Size = new System.Drawing.Size(449, 92);
+            this.gApp.Size = new System.Drawing.Size(449, 113);
             this.gApp.TabIndex = 3;
             this.gApp.TabStop = false;
             this.gApp.Text = "Application";
             // 
+            // chkShellMenus
+            // 
+            this.chkShellMenus.AccessibleName = "add program to windows right click menu";
+            this.chkShellMenus.Location = new System.Drawing.Point(9, 88);
+            this.chkShellMenus.Name = "chkShellMenus";
+            this.chkShellMenus.Size = new System.Drawing.Size(434, 17);
+            this.chkShellMenus.TabIndex = 11;
+            this.chkShellMenus.Text = "Add to context menu";
+            this.chkShellMenus.UseVisualStyleBackColor = true;
+            this.chkShellMenus.CheckedChanged += new System.EventHandler(this.chkShellMenus_CheckedChanged);
+            // 
             // bBrowseLogs
             // 
+            this.bBrowseLogs.AccessibleDescription = "opens the debug log file";
             this.bBrowseLogs.Location = new System.Drawing.Point(191, 61);
             this.bBrowseLogs.Name = "bBrowseLogs";
             this.bBrowseLogs.Size = new System.Drawing.Size(89, 23);
@@ -288,6 +302,7 @@
             // 
             // chkEnableLogging
             // 
+            this.chkEnableLogging.AccessibleName = "enable logging";
             this.chkEnableLogging.Location = new System.Drawing.Point(9, 65);
             this.chkEnableLogging.Name = "chkEnableLogging";
             this.chkEnableLogging.Size = new System.Drawing.Size(434, 17);
@@ -339,6 +354,7 @@
             // 
             // bRemoveAccount
             // 
+            this.bRemoveAccount.AccessibleName = "Remove this account";
             this.bRemoveAccount.Location = new System.Drawing.Point(380, 10);
             this.bRemoveAccount.Name = "bRemoveAccount";
             this.bRemoveAccount.Size = new System.Drawing.Size(75, 23);
@@ -349,6 +365,7 @@
             // 
             // bAddAccount
             // 
+            this.bAddAccount.AccessibleName = "Add a new account";
             this.bAddAccount.Location = new System.Drawing.Point(299, 10);
             this.bAddAccount.Name = "bAddAccount";
             this.bAddAccount.Size = new System.Drawing.Size(75, 23);
@@ -359,7 +376,7 @@
             // 
             // cProfiles
             // 
-            this.cProfiles.AccessibleDescription = "";
+            this.cProfiles.AccessibleDescription = "Select the current account";
             this.cProfiles.AccessibleName = "Profiles";
             this.cProfiles.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
             this.cProfiles.FormattingEnabled = true;
@@ -373,16 +390,88 @@
             // 
             this.gAccount.AccessibleDescription = "";
             this.gAccount.AccessibleName = "";
+            this.gAccount.Controls.Add(this.tTempPrefix);
+            this.gAccount.Controls.Add(this.labTempPrefix);
+            this.gAccount.Controls.Add(this.rBothWaySync);
+            this.gAccount.Controls.Add(this.labWayOfSync);
+            this.gAccount.Controls.Add(this.rRemoteToLocalOnly);
+            this.gAccount.Controls.Add(this.rLocalToRemoteOnly);
             this.gAccount.Controls.Add(this.labViewInBrowser);
             this.gAccount.Controls.Add(this.chkWebInt);
             this.gAccount.Controls.Add(this.bConfigureAccount);
             this.gAccount.Controls.Add(this.labAccount);
             this.gAccount.Location = new System.Drawing.Point(8, 50);
             this.gAccount.Name = "gAccount";
-            this.gAccount.Size = new System.Drawing.Size(447, 77);
+            this.gAccount.Size = new System.Drawing.Size(447, 213);
             this.gAccount.TabIndex = 3;
             this.gAccount.TabStop = false;
             this.gAccount.Text = "Profile";
+            // 
+            // tTempPrefix
+            // 
+            this.tTempPrefix.AccessibleDescription = "the prefix added to temporary files created by the application";
+            this.tTempPrefix.Location = new System.Drawing.Point(21, 181);
+            this.tTempPrefix.Name = "tTempPrefix";
+            this.tTempPrefix.Size = new System.Drawing.Size(408, 20);
+            this.tTempPrefix.TabIndex = 24;
+            this.tTempPrefix.TextChanged += new System.EventHandler(this.tTempPrefix_TextChanged);
+            this.tTempPrefix.Leave += new System.EventHandler(this.tTempPrefix_Leave);
+            // 
+            // labTempPrefix
+            // 
+            this.labTempPrefix.AccessibleDescription = "";
+            this.labTempPrefix.Location = new System.Drawing.Point(8, 160);
+            this.labTempPrefix.Name = "labTempPrefix";
+            this.labTempPrefix.Size = new System.Drawing.Size(437, 13);
+            this.labTempPrefix.TabIndex = 23;
+            this.labTempPrefix.Text = "Temporary file prefix:";
+            // 
+            // rBothWaySync
+            // 
+            this.rBothWaySync.AccessibleDescription = "both upload and download";
+            this.rBothWaySync.AccessibleName = "";
+            this.rBothWaySync.Checked = true;
+            this.rBothWaySync.Location = new System.Drawing.Point(21, 136);
+            this.rBothWaySync.Name = "rBothWaySync";
+            this.rBothWaySync.Size = new System.Drawing.Size(408, 17);
+            this.rBothWaySync.TabIndex = 21;
+            this.rBothWaySync.TabStop = true;
+            this.rBothWaySync.Text = "Both ways";
+            this.rBothWaySync.UseVisualStyleBackColor = true;
+            this.rBothWaySync.CheckedChanged += new System.EventHandler(this.rWayOfSync_CheckedChanged);
+            // 
+            // labWayOfSync
+            // 
+            this.labWayOfSync.AccessibleDescription = "";
+            this.labWayOfSync.Location = new System.Drawing.Point(8, 69);
+            this.labWayOfSync.Name = "labWayOfSync";
+            this.labWayOfSync.Size = new System.Drawing.Size(437, 13);
+            this.labWayOfSync.TabIndex = 22;
+            this.labWayOfSync.Text = "Way of synchronization:";
+            // 
+            // rRemoteToLocalOnly
+            // 
+            this.rRemoteToLocalOnly.AccessibleDescription = "only download files to local machine";
+            this.rRemoteToLocalOnly.AccessibleName = "";
+            this.rRemoteToLocalOnly.Location = new System.Drawing.Point(21, 113);
+            this.rRemoteToLocalOnly.Name = "rRemoteToLocalOnly";
+            this.rRemoteToLocalOnly.Size = new System.Drawing.Size(408, 17);
+            this.rRemoteToLocalOnly.TabIndex = 20;
+            this.rRemoteToLocalOnly.Text = "Remote to local only";
+            this.rRemoteToLocalOnly.UseVisualStyleBackColor = true;
+            this.rRemoteToLocalOnly.CheckedChanged += new System.EventHandler(this.rWayOfSync_CheckedChanged);
+            // 
+            // rLocalToRemoteOnly
+            // 
+            this.rLocalToRemoteOnly.AccessibleDescription = "only upload files to server";
+            this.rLocalToRemoteOnly.AccessibleName = "";
+            this.rLocalToRemoteOnly.Location = new System.Drawing.Point(21, 90);
+            this.rLocalToRemoteOnly.Name = "rLocalToRemoteOnly";
+            this.rLocalToRemoteOnly.Size = new System.Drawing.Size(408, 17);
+            this.rLocalToRemoteOnly.TabIndex = 19;
+            this.rLocalToRemoteOnly.Text = "Local to remote only";
+            this.rLocalToRemoteOnly.UseVisualStyleBackColor = true;
+            this.rLocalToRemoteOnly.CheckedChanged += new System.EventHandler(this.rWayOfSync_CheckedChanged);
             // 
             // labViewInBrowser
             // 
@@ -411,6 +500,8 @@
             // 
             // bConfigureAccount
             // 
+            this.bConfigureAccount.AccessibleDescription = "opens a form with details of this account";
+            this.bConfigureAccount.AccessibleName = "Account details";
             this.bConfigureAccount.Location = new System.Drawing.Point(325, 16);
             this.bConfigureAccount.Name = "bConfigureAccount";
             this.bConfigureAccount.Size = new System.Drawing.Size(107, 23);
@@ -452,13 +543,14 @@
             this.gFileFilters.Controls.Add(this.cIgnoreDotfiles);
             this.gFileFilters.Location = new System.Drawing.Point(8, 6);
             this.gFileFilters.Name = "gFileFilters";
-            this.gFileFilters.Size = new System.Drawing.Size(447, 145);
+            this.gFileFilters.Size = new System.Drawing.Size(447, 198);
             this.gFileFilters.TabIndex = 5;
             this.gFileFilters.TabStop = false;
             this.gFileFilters.Text = "File Filters";
             // 
             // bConfigureSelectiveSync
             // 
+            this.bConfigureSelectiveSync.AccessibleDescription = "Open form to configure selective sync";
             this.bConfigureSelectiveSync.Location = new System.Drawing.Point(325, 19);
             this.bConfigureSelectiveSync.Name = "bConfigureSelectiveSync";
             this.bConfigureSelectiveSync.Size = new System.Drawing.Size(107, 23);
@@ -469,6 +561,7 @@
             // 
             // bConfigureExtensions
             // 
+            this.bConfigureExtensions.AccessibleDescription = "Open form to configure ignored extensions";
             this.bConfigureExtensions.Location = new System.Drawing.Point(325, 48);
             this.bConfigureExtensions.Name = "bConfigureExtensions";
             this.bConfigureExtensions.Size = new System.Drawing.Size(107, 23);
@@ -501,7 +594,6 @@
             this.cIgnoreOldFiles.TabIndex = 9;
             this.cIgnoreOldFiles.Text = "Files modified before:";
             this.cIgnoreOldFiles.UseVisualStyleBackColor = true;
-            this.cIgnoreOldFiles.Visible = false;
             this.cIgnoreOldFiles.CheckedChanged += new System.EventHandler(this.cIgnoreOldFiles_CheckedChanged);
             // 
             // dtpLastModTime
@@ -511,9 +603,9 @@
             this.dtpLastModTime.Format = System.Windows.Forms.DateTimePickerFormat.Custom;
             this.dtpLastModTime.Location = new System.Drawing.Point(40, 167);
             this.dtpLastModTime.Name = "dtpLastModTime";
-            this.dtpLastModTime.Size = new System.Drawing.Size(186, 20);
+            this.dtpLastModTime.Size = new System.Drawing.Size(231, 20);
             this.dtpLastModTime.TabIndex = 8;
-            this.dtpLastModTime.Visible = false;
+            this.dtpLastModTime.Value = new System.DateTime(2000, 1, 1, 0, 0, 0, 0);
             this.dtpLastModTime.ValueChanged += new System.EventHandler(this.dtpLastModTime_ValueChanged);
             // 
             // labSelectExtensions
@@ -526,6 +618,7 @@
             // 
             // cIgnoreTempFiles
             // 
+            this.cIgnoreTempFiles.AccessibleDescription = "Check to ignore temporary files";
             this.cIgnoreTempFiles.Location = new System.Drawing.Point(22, 98);
             this.cIgnoreTempFiles.Name = "cIgnoreTempFiles";
             this.cIgnoreTempFiles.Size = new System.Drawing.Size(408, 17);
@@ -536,6 +629,7 @@
             // 
             // cIgnoreDotfiles
             // 
+            this.cIgnoreDotfiles.AccessibleDescription = "Check to ignore dotfiles";
             this.cIgnoreDotfiles.Location = new System.Drawing.Point(22, 121);
             this.cIgnoreDotfiles.Name = "cIgnoreDotfiles";
             this.cIgnoreDotfiles.Size = new System.Drawing.Size(408, 17);
@@ -610,7 +704,6 @@
             this.cAuto.TabStop = true;
             this.cAuto.Text = "automatically every";
             this.cAuto.UseVisualStyleBackColor = true;
-            this.cAuto.CheckedChanged += new System.EventHandler(this.cAuto_CheckedChanged);
             // 
             // cManually
             // 
@@ -654,7 +747,7 @@
             this.label4.Name = "label4";
             this.label4.Size = new System.Drawing.Size(219, 13);
             this.label4.TabIndex = 13;
-            this.label4.Text = "kb/s";
+            this.label4.Text = "KB/s";
             // 
             // label3
             // 
@@ -662,7 +755,7 @@
             this.label3.Name = "label3";
             this.label3.Size = new System.Drawing.Size(219, 13);
             this.label3.TabIndex = 12;
-            this.label3.Text = "kb/s";
+            this.label3.Text = "KB/s";
             // 
             // nUpLimit
             // 
@@ -921,7 +1014,7 @@
             this.label11.Name = "label11";
             this.label11.Size = new System.Drawing.Size(435, 13);
             this.label11.TabIndex = 3;
-            this.label11.Text = "Copyright © 2013 - ftpbox.org";
+            this.label11.Text = "Copyright © 2015 - ftpbox.org";
             // 
             // labContactMe
             // 
@@ -949,6 +1042,7 @@
             this.tray.Text = "FTPbox";
             this.tray.Visible = true;
             this.tray.BalloonTipClicked += new System.EventHandler(this.tray_BalloonTipClicked);
+            this.tray.MouseClick += new System.Windows.Forms.MouseEventHandler(this.tray_MouseClick);
             this.tray.MouseDoubleClick += new System.Windows.Forms.MouseEventHandler(this.tray_MouseDoubleClick);
             // 
             // trayMenu
@@ -956,103 +1050,49 @@
             this.trayMenu.Items.AddRange(new System.Windows.Forms.ToolStripItem[] {
             this.optionsToolStripMenuItem,
             this.toolStripSeparator2,
-            this.recentFilesToolStripMenuItem,
             this.SyncToolStripMenuItem,
             this.toolStripSeparator1,
             this.aboutToolStripMenuItem,
             this.exitToolStripMenuItem});
             this.trayMenu.Name = "trayMenu";
-            this.trayMenu.Size = new System.Drawing.Size(143, 126);
+            this.trayMenu.Size = new System.Drawing.Size(143, 104);
             // 
             // optionsToolStripMenuItem
             // 
             this.optionsToolStripMenuItem.Name = "optionsToolStripMenuItem";
-            this.optionsToolStripMenuItem.Size = new System.Drawing.Size(142, 22);
+            this.optionsToolStripMenuItem.Size = new System.Drawing.Size(152, 22);
             this.optionsToolStripMenuItem.Text = "Options";
             this.optionsToolStripMenuItem.Click += new System.EventHandler(this.optionsToolStripMenuItem_Click);
             // 
             // toolStripSeparator2
             // 
             this.toolStripSeparator2.Name = "toolStripSeparator2";
-            this.toolStripSeparator2.Size = new System.Drawing.Size(139, 6);
-            // 
-            // recentFilesToolStripMenuItem
-            // 
-            this.recentFilesToolStripMenuItem.AccessibleDescription = "Dropbdown menu";
-            this.recentFilesToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
-            this.toolStripMenuItem1,
-            this.toolStripMenuItem2,
-            this.toolStripMenuItem3,
-            this.toolStripMenuItem4,
-            this.toolStripMenuItem5});
-            this.recentFilesToolStripMenuItem.Name = "recentFilesToolStripMenuItem";
-            this.recentFilesToolStripMenuItem.Size = new System.Drawing.Size(142, 22);
-            this.recentFilesToolStripMenuItem.Text = "Recent Files";
-            // 
-            // toolStripMenuItem1
-            // 
-            this.toolStripMenuItem1.Enabled = false;
-            this.toolStripMenuItem1.Name = "toolStripMenuItem1";
-            this.toolStripMenuItem1.Size = new System.Drawing.Size(143, 22);
-            this.toolStripMenuItem1.Text = "Not available";
-            this.toolStripMenuItem1.Click += new System.EventHandler(this.toolStripMenuItem1_Click);
-            // 
-            // toolStripMenuItem2
-            // 
-            this.toolStripMenuItem2.Enabled = false;
-            this.toolStripMenuItem2.Name = "toolStripMenuItem2";
-            this.toolStripMenuItem2.Size = new System.Drawing.Size(143, 22);
-            this.toolStripMenuItem2.Text = "Not available";
-            this.toolStripMenuItem2.Click += new System.EventHandler(this.toolStripMenuItem2_Click);
-            // 
-            // toolStripMenuItem3
-            // 
-            this.toolStripMenuItem3.Enabled = false;
-            this.toolStripMenuItem3.Name = "toolStripMenuItem3";
-            this.toolStripMenuItem3.Size = new System.Drawing.Size(143, 22);
-            this.toolStripMenuItem3.Text = "Not available";
-            this.toolStripMenuItem3.Click += new System.EventHandler(this.toolStripMenuItem3_Click);
-            // 
-            // toolStripMenuItem4
-            // 
-            this.toolStripMenuItem4.Enabled = false;
-            this.toolStripMenuItem4.Name = "toolStripMenuItem4";
-            this.toolStripMenuItem4.Size = new System.Drawing.Size(143, 22);
-            this.toolStripMenuItem4.Text = "Not available";
-            this.toolStripMenuItem4.Click += new System.EventHandler(this.toolStripMenuItem4_Click);
-            // 
-            // toolStripMenuItem5
-            // 
-            this.toolStripMenuItem5.Enabled = false;
-            this.toolStripMenuItem5.Name = "toolStripMenuItem5";
-            this.toolStripMenuItem5.Size = new System.Drawing.Size(143, 22);
-            this.toolStripMenuItem5.Text = "Not available";
-            this.toolStripMenuItem5.Click += new System.EventHandler(this.toolStripMenuItem5_Click);
+            this.toolStripSeparator2.Size = new System.Drawing.Size(149, 6);
             // 
             // SyncToolStripMenuItem
             // 
             this.SyncToolStripMenuItem.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(161)));
             this.SyncToolStripMenuItem.Name = "SyncToolStripMenuItem";
-            this.SyncToolStripMenuItem.Size = new System.Drawing.Size(142, 22);
+            this.SyncToolStripMenuItem.Size = new System.Drawing.Size(152, 22);
             this.SyncToolStripMenuItem.Text = "Start syncing";
             this.SyncToolStripMenuItem.Click += new System.EventHandler(this.SyncToolStripMenuItem_Click);
             // 
             // toolStripSeparator1
             // 
             this.toolStripSeparator1.Name = "toolStripSeparator1";
-            this.toolStripSeparator1.Size = new System.Drawing.Size(139, 6);
+            this.toolStripSeparator1.Size = new System.Drawing.Size(149, 6);
             // 
             // aboutToolStripMenuItem
             // 
             this.aboutToolStripMenuItem.Name = "aboutToolStripMenuItem";
-            this.aboutToolStripMenuItem.Size = new System.Drawing.Size(142, 22);
+            this.aboutToolStripMenuItem.Size = new System.Drawing.Size(152, 22);
             this.aboutToolStripMenuItem.Text = "About";
             this.aboutToolStripMenuItem.Click += new System.EventHandler(this.aboutToolStripMenuItem_Click);
             // 
             // exitToolStripMenuItem
             // 
             this.exitToolStripMenuItem.Name = "exitToolStripMenuItem";
-            this.exitToolStripMenuItem.Size = new System.Drawing.Size(142, 22);
+            this.exitToolStripMenuItem.Size = new System.Drawing.Size(152, 22);
             this.exitToolStripMenuItem.Text = "Exit";
             this.exitToolStripMenuItem.Click += new System.EventHandler(this.exitToolStripMenuItem_Click);
             // 
@@ -1128,17 +1168,9 @@
         private System.Windows.Forms.Label label11;
         private System.Windows.Forms.Label labContactMe;
         private System.Windows.Forms.Label labFree;
-        private System.IO.FileSystemWatcher fswFiles;
-        private System.IO.FileSystemWatcher fswFolders;
         private System.Windows.Forms.NotifyIcon tray;
         private System.Windows.Forms.ContextMenuStrip trayMenu;
         private System.Windows.Forms.ToolStripMenuItem optionsToolStripMenuItem;
-        private System.Windows.Forms.ToolStripMenuItem recentFilesToolStripMenuItem;
-        private System.Windows.Forms.ToolStripMenuItem toolStripMenuItem1;
-        private System.Windows.Forms.ToolStripMenuItem toolStripMenuItem2;
-        private System.Windows.Forms.ToolStripMenuItem toolStripMenuItem3;
-        private System.Windows.Forms.ToolStripMenuItem toolStripMenuItem4;
-        private System.Windows.Forms.ToolStripMenuItem toolStripMenuItem5;
         private System.Windows.Forms.ToolStripMenuItem aboutToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem exitToolStripMenuItem;
         private System.Windows.Forms.TabPage tabBandwidth;
@@ -1188,5 +1220,12 @@
         private System.Windows.Forms.Button bConfigureAccount;
         private System.Windows.Forms.LinkLabel labViewInBrowser;
         private System.Windows.Forms.CheckBox chkWebInt;
+        private System.Windows.Forms.RadioButton rBothWaySync;
+        private System.Windows.Forms.Label labWayOfSync;
+        private System.Windows.Forms.RadioButton rRemoteToLocalOnly;
+        private System.Windows.Forms.RadioButton rLocalToRemoteOnly;
+        private System.Windows.Forms.TextBox tTempPrefix;
+        private System.Windows.Forms.Label labTempPrefix;
+        private System.Windows.Forms.CheckBox chkShellMenus;
     }
 }

@@ -3,30 +3,34 @@ using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
 using FTPboxLib;
+using System.Threading.Tasks;
+using System.Security.Authentication;
+using System.IO;
 
 namespace FTPbox.Forms
 {
     public partial class Setup : Form
     {
-        private readonly Point _groupLocation = new Point(12, 12);        
-        private readonly Size _formSize = new Size(496, 292);
+        private readonly Point _groupLocation = new Point(12, 12);
 
         private AccountSetupTab _prevTab = AccountSetupTab.None;
-        private AccountSetupTab _currentTab = AccountSetupTab.None;
-        private AccountSetupTab _initialTab;
+        private AccountSetupTab _currentTab;
+        private readonly AccountSetupTab _initialTab;
 
-        private FolderBrowserDialog fbd = new FolderBrowserDialog() { RootFolder = Environment.SpecialFolder.Desktop, ShowNewFolderButton = true };
+        private readonly FolderBrowserDialog _fbd = new FolderBrowserDialog() { RootFolder = Environment.SpecialFolder.Desktop, ShowNewFolderButton = true };
 
         private bool _checkingNodes = false;
         public static bool JustPassword = false;
-        private string _privateKey;
+
+        private bool ftp => cMode.SelectedIndex == 0;
+        private bool ftps => ftp && cEncryption.SelectedIndex != 0;
+        private bool keyAuth => !ftp && cEncryption.SelectedIndex == 1;
 
         public Setup()
         {
             InitializeComponent();
             var basicSetup = string.IsNullOrEmpty(Settings.General.Language);
 
-            this.Size = _formSize;
             _initialTab = basicSetup ? AccountSetupTab.None : AccountSetupTab.Login;
 
             PopulateLanguages();
@@ -37,7 +41,7 @@ namespace FTPbox.Forms
                 SetLanguage(Settings.General.Language);
 
             _currentTab = _initialTab;
-
+            
             cEncryption.SelectedIndex = 0;
             cMode.SelectedIndex = 0;
         }
@@ -50,19 +54,18 @@ namespace FTPbox.Forms
 
             SwitchTab(_currentTab);
 
-            if (JustPassword && Program.Account.isAccountSet)
+            if (JustPassword && Program.Account.IsAccountSet)
             {
                 tHost.Text = Program.Account.Account.Host;
                 tUsername.Text = Program.Account.Account.Username;
                 nPort.Value = Program.Account.Account.Port;
-                cEncryption.SelectedIndex = (Program.Account.Account.Protocol != FtpProtocol.FTPS) ? 0 : (Program.Account.Account.FtpsMethod == FtpsMethod.Explicit ? 1 : 2);
+                cEncryption.SelectedIndex = (int) Program.Account.Account.FtpsMethod;
                 cMode.SelectedIndex = (Program.Account.Account.Protocol != FtpProtocol.SFTP) ? 0 : 1;
                 cAskForPass.Checked = true;
 
-                if (Program.Account.isPrivateKeyValid)
+                if (Program.Account.IsPrivateKeyValid)
                 {
-                    _privateKey = Program.Account.Account.PrivateKeyFile;
-                    labKeyPath.Text = new System.IO.FileInfo(_privateKey).Name;
+                    tPrivateKey.Text = Program.Account.Account.PrivateKeyFile;
                     cEncryption.SelectedIndex = 1;
 
                     labEncryption.Text = Common.Languages[UiControl.Authentication];
@@ -77,6 +80,7 @@ namespace FTPbox.Forms
                 bPrevious.Enabled = false;
             }
             cEncryption.SelectedIndexChanged += cEncryption_SelectedIndexChanged;
+            cMode.SelectedIndexChanged += cMode_SelectedIndexChanged;
         }
 
         /// <summary>
@@ -219,7 +223,7 @@ namespace FTPbox.Forms
             bFinish.Text = Common.Languages[UiControl.Finish];
 
             // Is this a right-to-left language?            
-            RightToLeftLayout = new[] { "he" }.Contains(lan);
+            RightToLeftLayout = Common.RtlLanguages.Contains(lan);
         }
 
         /// <summary>
@@ -227,33 +231,27 @@ namespace FTPbox.Forms
         /// On successful login, move to next tab or
         /// exit if this is a JustPassword dialog.
         /// </summary>
-        private void TryLogin()
+        private async Task TryLogin()
         {
-            bool ftporsftp = cMode.SelectedIndex == 0;
-            bool ftps = cMode.SelectedIndex == 0 && cEncryption.SelectedIndex != 0;
-            bool ftpes = cEncryption.SelectedIndex == 1;
-
             Program.Account.AddAccount(tHost.Text, tUsername.Text, tPass.Text, Convert.ToInt32(nPort.Value));
-            if (ftporsftp && ftps)
-                Program.Account.Account.Protocol = FtpProtocol.FTPS;
-            else if (ftporsftp)
-                Program.Account.Account.Protocol = FtpProtocol.FTP;
-            else
-                Program.Account.Account.Protocol = FtpProtocol.SFTP;
+            Program.Account.Account.Protocol = ftps ? FtpProtocol.FTPS : (FtpProtocol)cMode.SelectedIndex;
+            Program.Account.Account.FtpsMethod = (FtpsMethod) cEncryption.SelectedIndex;
+            Program.Account.Account.PrivateKeyFile = (keyAuth) ? tPrivateKey.Text : null;
 
-            if (!ftps)
-                Program.Account.Account.FtpsMethod = FtpsMethod.None;
-            else if (ftpes)
-                Program.Account.Account.FtpsMethod = FtpsMethod.Explicit;
-            else
-                Program.Account.Account.FtpsMethod = FtpsMethod.Implicit;
-
-            Program.Account.Account.PrivateKeyFile = (!ftporsftp && cEncryption.SelectedIndex == 1) ? _privateKey : null;
+            if (keyAuth && !File.Exists(tPrivateKey.Text))
+            {
+                MessageBox.Show("Please select a private key to use.", "No private key selected", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
 
             try
             {
-                Program.Account.Client.Connect();
-                Log.Write(l.Debug, "Connected: {0}", Program.Account.Client.isConnected);
+                Program.Account.InitClient();
+
+                Program.Account.Client.ValidateCertificate += UIHelpers.CheckCertificate;
+
+                await Program.Account.Client.Connect();
+                Log.Write(l.Debug, "Connected: {0}", Program.Account.Client.IsConnected);
 
                 if (JustPassword)
                 {
@@ -266,10 +264,19 @@ namespace FTPbox.Forms
                 SetDefaultLocalPath();
                 SwitchTab(AccountSetupTab.LocalFodler);
             }
+            catch (CertificateDeclinedException)
+            {
+                Log.Write(l.Debug, "Certificate was declined from user");
+            }
+            catch (AuthenticationException ex)
+            {
+                MessageBox.Show("Could not authenticate. Check your account details and try again."
+                    + Environment.NewLine + "Error message: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
             catch (Exception ex)
             {
                 MessageBox.Show("Could not connect to FTP server. Check your account details and try again."
-                    + Environment.NewLine + " Error message: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    + Environment.NewLine + "Error message: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -277,63 +284,79 @@ namespace FTPbox.Forms
         /// Get a remote list inside the current directory
         /// and display the results in tRemoteList.        
         /// </summary>
-        private void PopulateRemoteList()
+        private async Task PopulateRemoteList()
         {
             tRemoteList.Nodes.Clear();
 
-            var first = new TreeNode { Text = "/" };
-            var current = first;
-            foreach (var f in Program.Account.HomePath.Split('/'))
-            {
-                if (string.IsNullOrWhiteSpace(f)) continue;
+            Log.Write(l.Info, $"Listing from directory: {Program.Account.Client.WorkingDirectory}");
 
-                current.Nodes.Add(f);
-                current = current.FirstNode;
-            }
+            var list = (_currentTab == AccountSetupTab.RemoteFolder)
+                ? await Program.Account.Client.List(".", false)
+                : await Program.Account.Client.ListRecursive(".", false);
+
             if (_currentTab == AccountSetupTab.RemoteFolder)
             {
+                list = list.Where(x => x.Type == ClientItemType.Folder);
+
+                var first = new TreeNode("/");
+                var current = first;
+
+                foreach (var f in Program.Account.HomePath.Split('/'))
+                {
+                    if (string.IsNullOrWhiteSpace(f)) continue;
+
+                    current.Nodes.Add(f);
+                    current = current.FirstNode;
+                }
+
                 tRemoteList.AfterExpand -= tRemoteList_AfterExpand;
                 tRemoteList.Nodes.Add(first);
                 tRemoteList.ExpandAll();
-            }
-            Log.Write(l.Warning, Program.Account.Client.WorkingDirectory);
-            foreach (var c in Program.Account.Client.List(".", false))
-            {
-                if (c.Type == ClientItemType.Folder)
-                {
-                    var ParentNode = new TreeNode { Text = c.Name };
-                    if (_currentTab == AccountSetupTab.RemoteFolder)
-                        current.Nodes.Add(ParentNode);
-                    else
-                        tRemoteList.Nodes.Add(ParentNode);
 
-                    var ChildNode = new TreeNode { Text = c.Name };
-                    ParentNode.Nodes.Add(ChildNode);
+                foreach (var c in list)
+                {
+                    var parentNode = new TreeNode(c.Name);
+                    current.Nodes.Add(parentNode);
+
+                    var childNode = new TreeNode(c.Name);
+                    parentNode.Nodes.Add(childNode);
                 }
-                // Only list files in SelectiveSync tab
-                else if (c.Type == ClientItemType.File && _currentTab == AccountSetupTab.SelectiveSync)
-                    tRemoteList.Nodes.Add(c.Name);
-            }
-            if (_currentTab == AccountSetupTab.RemoteFolder)
-            {
+
                 current.Expand();
                 tFullRemotePath.Text = Program.Account.HomePath;
                 tRemoteList.AfterExpand += tRemoteList_AfterExpand;
             }
             else
-                EditNodeCheckboxes();
-        }
-
-        private void CheckSingleRoute(TreeNode tn)
-        {
-            if (tn.Checked && tn.Parent != null)
-                if (!tn.Parent.Checked)
+            {
+                foreach (var l in list)
                 {
-                    tn.Parent.Checked = true;
-                    if (Program.Account.IgnoreList.Items.Contains(tn.Parent.FullPath))
-                        Program.Account.IgnoreList.Items.Remove(tn.Parent.FullPath);
-                    CheckSingleRoute(tn.Parent);
+                    // convert to relative paths
+                    l.FullPath = Program.Account.GetCommonPath(l.FullPath, false);
                 }
+                // get the first level folders
+                var folders = list.Where(d => d.Type == ClientItemType.Folder && !d.FullPath.Contains("/"));
+
+                // get the first level files
+                var files = list
+                    .Where(f => f.Type == ClientItemType.File && folders.All(d => !f.FullPath.StartsWith(d.FullPath)))
+                    .Select(x => new TreeNode(x.Name))
+                    .ToArray();
+
+                // List directories first
+                foreach (var d in folders)
+                {
+                    if (d.Name == "webint") continue;
+
+                    var parent = UIHelpers.ConstructNodeFrom(list.ToList(), d);
+
+                    tRemoteList.Nodes.Add(parent);
+                }
+
+                tRemoteList.Nodes.AddRange(files);
+
+                EditNodeCheckboxes();
+                tRemoteList.CollapseAll();
+            }
         }
 
         /// <summary>
@@ -341,37 +364,16 @@ namespace FTPbox.Forms
         /// </summary>
         private void EditNodeCheckboxes()
         {
-            foreach (TreeNode t in tRemoteList.Nodes)
-            {
-                if (!Program.Account.IgnoreList.isInIgnoredFolders(t.FullPath)) t.Checked = true;
-                if (t.Parent != null)
-                    if (!t.Parent.Checked) t.Checked = false;
+            _checkingNodes = true;
 
-                foreach (TreeNode tn in t.Nodes)
-                    EditNodeCheckboxesRecursive(tn);
-            }
-        }
+            UIHelpers.EditNodeCheckboxesRecursive(tRemoteList.Nodes);
 
-        private void EditNodeCheckboxesRecursive(TreeNode t)
-        {
-            t.Checked = Program.Account.IgnoreList.isInIgnoredFolders(t.FullPath);
-            if (t.Parent != null)
-                if (!t.Parent.Checked) t.Checked = false;
-
-            foreach (TreeNode tn in t.Nodes)
-                EditNodeCheckboxesRecursive(tn);
-        }
-
-        private void CheckUncheckChildNodes(TreeNode t, bool c)
-        {
-            t.Checked = c;
-            foreach (TreeNode tn in t.Nodes)
-                CheckUncheckChildNodes(tn, c);
+            _checkingNodes = false;
         }
 
         #region Control event handlers
 
-        private void bPrevious_Click(object sender, EventArgs e)
+        private async void bPrevious_Click(object sender, EventArgs e)
         {
             SwitchTab(_prevTab);
 
@@ -408,7 +410,7 @@ namespace FTPbox.Forms
                 tRemoteList.CheckBoxes = false;
                 tFullRemotePath.Visible = true;
                 labFullPath.Text = Common.Languages[UiControl.FullRemotePath];
-                PopulateRemoteList();
+                await PopulateRemoteList();
             }
 
             bPrevious.Enabled = _currentTab != _initialTab;
@@ -417,19 +419,21 @@ namespace FTPbox.Forms
             this.AcceptButton = bNext;
         }
 
-        private void bNext_Click(object sender, EventArgs e)
+        private async void bNext_Click(object sender, EventArgs e)
         {
             switch (_currentTab)
             {
                 case AccountSetupTab.None:
-                    string lan = cLanguages.SelectedItem.ToString().Substring(cLanguages.SelectedItem.ToString().IndexOf("(") + 1);
+                    var lan = cLanguages.SelectedItem.ToString().Substring(cLanguages.SelectedItem.ToString().IndexOf("(", StringComparison.Ordinal) + 1);
                     lan = lan.Substring(0, lan.Length - 1);
                     Settings.General.Language = lan;
                     SetLanguage(lan);
                     SwitchTab(AccountSetupTab.Login);
                     break;
                 case AccountSetupTab.Login:
-                    TryLogin();
+                    bNext.Enabled = false;
+                    await TryLogin();
+                    bNext.Enabled = true;
                     break;
                 case AccountSetupTab.LocalFodler:
                     if (!System.IO.Directory.Exists(tLocalPath.Text))
@@ -440,7 +444,7 @@ namespace FTPbox.Forms
                     labFullPath.Text = Common.Languages[UiControl.FullRemotePath];
                     gRemoteFolder.Text = Common.Languages[UiControl.RemotePath];
                     SwitchTab(AccountSetupTab.RemoteFolder);
-                    PopulateRemoteList();
+                    await PopulateRemoteList();
                     break;
                 case AccountSetupTab.RemoteFolder:
                     var parentPath = Program.Account.Account.Host + tFullRemotePath.Text;
@@ -457,7 +461,7 @@ namespace FTPbox.Forms
                     labFullPath.Text = Common.Languages[UiControl.UncheckFiles];
                     gRemoteFolder.Text = Common.Languages[UiControl.SelectiveSync];
                     SwitchTab(AccountSetupTab.SelectiveSync);
-                    PopulateRemoteList();
+                    await PopulateRemoteList();
                     break;
             }
             bFinish.Enabled = (_currentTab == AccountSetupTab.FileSyncOption && rSyncAll.Checked) || _currentTab == AccountSetupTab.SelectiveSync;
@@ -466,11 +470,13 @@ namespace FTPbox.Forms
             this.AcceptButton = bNext.Enabled ? bNext : bFinish;
         }
 
-        private void bFinish_Click(object sender, EventArgs e)
+        private async void bFinish_Click(object sender, EventArgs e)
         {
             if (JustPassword)
             {
-                TryLogin();
+                bFinish.Enabled = false;
+                await TryLogin();
+                bFinish.Enabled = true;
                 return;
             }
 
@@ -481,42 +487,59 @@ namespace FTPbox.Forms
 
         private void bBrowse_Click(object sender, EventArgs e)
         {
-            fbd.ShowDialog();
-            if (fbd.SelectedPath != string.Empty)
-                tLocalPath.Text = fbd.SelectedPath;
+            _fbd.ShowDialog();
+            if (_fbd.SelectedPath != string.Empty)
+                tLocalPath.Text = _fbd.SelectedPath;
         }
 
         private void cMode_SelectedIndexChanged(object sender, EventArgs e)
         {
-            nPort.Value = cMode.SelectedIndex != 1 ? 21 : 22;
-
-            labKeyPath.Text = string.Empty;
+            nPort.Value = ftp ? 21 : 22;
+            
             cEncryption.Items.Clear();
-            if (cMode.SelectedIndex == 0)
-                cEncryption.Items.AddRange(new[] { "None", "require explicit FTP over TLS", "require implicit FTP over TLS"});
-            else
-                cEncryption.Items.AddRange(new[] { "Normal", "public key authentication" });
+            cEncryption.Items.AddRange( 
+                ftp
+                ? new object[] {"None", "Require implicit FTP over TLS", "Require explicit FTP over TLS" }
+                : new object[] {"Normal", "Public Key Authentication"});
             cEncryption.SelectedIndex = 0;
 
-            labEncryption.Text = cMode.SelectedIndex == 0 ? Common.Languages[UiControl.Encryption] : Common.Languages[UiControl.Authentication];
+            labEncryption.Text = ftp ? Common.Languages[UiControl.Encryption] : Common.Languages[UiControl.Authentication];
+
+            tPrivateKey.Visible = keyAuth;
+            bBrowsePrivKey.Visible = keyAuth;
+            labPrivKey.Visible = keyAuth;
         }
 
         private void cEncryption_SelectedIndexChanged(object sender, EventArgs e)
         {
-            labKeyPath.Text = string.Empty;
-            if (cMode.SelectedIndex != 1 || cEncryption.SelectedIndex != 1) return;
+            tPrivateKey.Visible = keyAuth;
+            bBrowsePrivKey.Visible = keyAuth;
+            labPrivKey.Visible = keyAuth;
+        }
 
-            var ofd = new OpenFileDialog() { InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), Multiselect = false };
+        private void bBrowsePrivKey_Click(object sender, EventArgs e)
+        {
+            // start from the user's .ssh folder, the key is likely to be in here
+            var folder = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (Directory.Exists(Path.Combine(folder, ".ssh")))
+            {
+                folder = Path.Combine(folder, ".ssh");
+            }
+
+            var ofd = new OpenFileDialog()
+            {
+                InitialDirectory = folder,
+                Multiselect = false
+            };
 
             if (ofd.ShowDialog() != DialogResult.OK)
             {
-                cEncryption.SelectedIndex = 0;
                 return;
             }
 
             cEncryption.SelectedIndex = 1;
-            _privateKey = ofd.FileName;
-            labKeyPath.Text = new System.IO.FileInfo(ofd.FileName).Name;
+
+            tPrivateKey.Text = ofd.FileName;
         }
 
         private void Setup_FormClosing(object sender, FormClosingEventArgs e)
@@ -574,26 +597,21 @@ namespace FTPbox.Forms
         {
             if (_checkingNodes) return;
 
-            string cpath = Program.Account.GetCommonPath(e.Node.FullPath, false);
-
-            if (e.Node.Checked && Program.Account.IgnoreList.Items.Contains(cpath))
-                Program.Account.IgnoreList.Items.Remove(cpath);
-            else if (!e.Node.Checked && !Program.Account.IgnoreList.Items.Contains(cpath))
-                Program.Account.IgnoreList.Items.Add(cpath);
+            // If this is a folder node: uncheck all child nodes in the GUI
+            // but only put this node (parent folder) in the ignored list.
 
             _checkingNodes = true;
-            CheckUncheckChildNodes(e.Node, e.Node.Checked);
+            UIHelpers.CheckUncheckChildNodes(e.Node, e.Node.Checked);
 
-            if (e.Node.Checked && e.Node.Parent != null)
-                if (!e.Node.Parent.Checked)
-                {
-                    e.Node.Parent.Checked = true;
-                    if (Program.Account.IgnoreList.Items.Contains(e.Node.Parent.FullPath))
-                        Program.Account.IgnoreList.Items.Remove(e.Node.Parent.FullPath);
-                    CheckSingleRoute(e.Node.Parent);
-                }
-            // Program.Account.IgnoreList.Save();
+            if (e.Node.Checked && e.Node.Parent != null && !e.Node.Parent.Checked)
+            {
+                e.Node.Parent.Checked = true;
+                UIHelpers.CheckSingleRoute(e.Node.Parent);
+            }
+
             _checkingNodes = false;
+
+            Program.Account.IgnoreList.Items = UIHelpers.GetUncheckedItems(tRemoteList.Nodes).ToList();
         }
 
         private void tRemoteList_AfterSelect(object sender, TreeViewEventArgs e)
@@ -610,9 +628,12 @@ namespace FTPbox.Forms
             tFullRemotePath.Text = path;
         }
 
-        private void tRemoteList_AfterExpand(object sender, TreeViewEventArgs e)
+        private async void tRemoteList_AfterExpand(object sender, TreeViewEventArgs e)
         {
-            string path = (_currentTab == AccountSetupTab.RemoteFolder) ? "/" : "./";
+            if (_currentTab == AccountSetupTab.SelectiveSync)
+                return;
+            
+            string path = "/";
             path += e.Node.FullPath.Replace('\\', '/');
             while (path.Contains("//"))
                 path = path.Replace("//", "/");
@@ -620,22 +641,19 @@ namespace FTPbox.Forms
             if (e.Node.Nodes.Count > 0)
                 e.Node.Nodes.Clear();
 
-            foreach (var c in Program.Account.Client.List(path, false))
+            var list = await Program.Account.Client.List(path, false);
+
+            foreach (var c in list)
             {
                 if (c.Type == ClientItemType.Folder)
                 {
-                    var ParentNode = new TreeNode { Text = c.Name };
-                    e.Node.Nodes.Add(ParentNode);
+                    var parentNode = new TreeNode(c.Name);
+                    e.Node.Nodes.Add(parentNode);
 
-                    var ChildNode = new TreeNode { Text = c.Name };
-                    ParentNode.Nodes.Add(ChildNode);
+                    var childNode = new TreeNode(c.Name);
+                    parentNode.Nodes.Add(childNode);
                 }
-                else if (c.Type == ClientItemType.File && _currentTab == AccountSetupTab.SelectiveSync)
-                    e.Node.Nodes.Add(c.Name);
             }
-            // update checkboxes
-            foreach (TreeNode tn in e.Node.Nodes)
-                tn.Checked = !Program.Account.IgnoreList.isInIgnoredFolders(tn.FullPath);
         }
 
         private void Setup_RightToLeftLayoutChanged(object sender, EventArgs e)
@@ -663,7 +681,9 @@ namespace FTPbox.Forms
             nPort.Location      = RightToLeftLayout ? new Point(15, 81) : new Point(391, 81);
             tUsername.Location  = RightToLeftLayout ? new Point(15, 107) : new Point(145, 107);
             tPass.Location      = RightToLeftLayout ? new Point(15, 133) : new Point(145, 133);
-            labKeyPath.Location = RightToLeftLayout ? new Point(15, 57) : new Point(324, 57);
+
+            bBrowsePrivKey.Location = RightToLeftLayout ? new Point(15, 157) : new Point(391, 157);
+            tPrivateKey.Location    = RightToLeftLayout ? new Point(78, 159) : new Point(145, 159);
 
             tLocalPath.Location      = RightToLeftLayout ? new Point(95, 133) : new Point(15, 133);
             bBrowse.Location         = RightToLeftLayout ? new Point(15, 131) : new Point(375, 131);

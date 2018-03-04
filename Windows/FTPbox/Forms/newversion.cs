@@ -13,7 +13,6 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
-using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 using FTPboxLib;
@@ -21,11 +20,12 @@ using FTPboxLib;
 namespace FTPbox
 {
     public partial class newversion : Form
-    {        
-        public static string newvers;
-        public static string downLink;
+    {
+        public static string Newvers;
+        public static string DownLink;
+        public static bool update;
 
-        public newversion ()
+        public newversion()
         {
             InitializeComponent();
         }
@@ -33,31 +33,19 @@ namespace FTPbox
         private void newversion_Load(object sender, EventArgs e)
         {
             label3.Text = Application.ProductVersion.Substring(0, 5);
-            label5.Text = newvers.Substring(0, 5);
-            Set_Language(Settings.General.Language);          
+            label5.Text = Newvers.Substring(0, 5);
+            Set_Language(Settings.General.Language);
         }
 
         private void bDownload_Click(object sender, EventArgs e)
         {
-            try
-            {
-                string pathtoupdater = Application.StartupPath + @"\FTPbox Updater.exe";
-
-                while (!File.Exists(pathtoupdater))
-                {
-                    DialogResult dr = MessageBox.Show("The file updater.exe is missing from the folder. Please put it back there or reinstall before updating.", "FTPbox - Missing File", MessageBoxButtons.RetryCancel, MessageBoxIcon.Error);
-                    if (dr == DialogResult.Cancel)
-                        Process.GetCurrentProcess().Kill();
-                }
-
-                var param = string.Format("{0} {1} {2}", "FTPbox", newvers, downLink);
-                var pi = new ProcessStartInfo(pathtoupdater, param);
-                pi.Verb = "runas";
-                Process.Start(pi);
-            }
-            catch { }
-
-            Process.GetCurrentProcess().Kill();
+#if PORTABLE
+            Process.Start("http://ftpbox.org/downloads/");
+            Close();
+#else
+            update = true;
+            Close();
+#endif
         }
 
         private void bLearnMore_Click(object sender, EventArgs e)
@@ -66,7 +54,9 @@ namespace FTPbox
             {
                 Process.Start("http://ftpbox.org/changelog/");
             }
-            catch { }
+            catch
+            {
+            }
             Close();
         }
 
@@ -77,7 +67,7 @@ namespace FTPbox
 
         private void Set_Language(string lan)
         {
-            string qmark = "?";
+            var qmark = "?";
             if (lan == "el") qmark = ";";
 
             Text = "FTPbox | " + Common.Languages[UiControl.UpdateAvailable];
@@ -90,7 +80,7 @@ namespace FTPbox
             bClose.Text = Common.Languages[UiControl.RemindLater];
 
             // Is this a right-to-left language?
-            RightToLeftLayout = new[] { "he" }.Contains(lan);
+            RightToLeftLayout = Common.RtlLanguages.Contains(lan);
         }
 
         private void newversion_RightToLeftLayoutChanged(object sender, EventArgs e)

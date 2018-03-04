@@ -13,6 +13,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 
@@ -42,31 +43,40 @@ namespace FTPboxLib
             FolderWatcher = new FolderWatcher(this);
 
             WebInterface = new WebInterface(this);
-            SyncQueue = new SyncQueue(this);            
+            SyncQueue = new SyncQueue(this);
 
-            Client = new Client(this);
+            TransferValidator = new SizeTransferValidator(this);
+        }
+
+        public void InitClient()
+        {
+            if (this.Account.Protocol == FtpProtocol.SFTP)
+            {
+                Client = new SftpClient(this);
+            }
+            else
+            {
+                Client = new FtpClient(this);
+            }
         }
 
         #region Properties
 
         /// <summary>
         /// Order the Files list by last time of change and
-        /// return the first 5 items in the list
+        /// return the first 10 items in the list
         /// </summary>        
         public List<FileLogItem> RecentList
         {
             get
             {
-                var recent = new List<FileLogItem>(FileLog.Files);
-                recent.Sort((x, y) => DateTime.Compare(x.LatestChangeTime(), y.LatestChangeTime()));
+                Log.Write(l.Client, "{0} items in RecentList", FileLog.Files.Count);
 
-                recent.Reverse();
-                Log.Write(l.Client, "{0} items in RecentList", recent.Count);
-
-                if (recent.Count > 5)
-                    return recent.GetRange(0, 5);
-                else
-                    return recent;
+                return FileLog.Files.ToArray()
+                    .Where(x => File.Exists(Path.Combine(Paths.Local, x.CommonPath)))
+                    .OrderByDescending(x => x.LatestChangeTime())
+                    .Take(10)
+                    .ToList();
             }
         }
 
@@ -75,7 +85,7 @@ namespace FTPboxLib
             get { return GetHttpLink("webint"); }
         }
 
-        public bool isAccountSet
+        public bool IsAccountSet
 	    {
 	        get
 	        {
@@ -83,7 +93,7 @@ namespace FTPboxLib
 	        }
 	    }
 
-	    public bool isPathsSet
+	    public bool IsPathsSet
 	    {
 	        get
 	        {
@@ -108,7 +118,7 @@ namespace FTPboxLib
         /// <summary>
         /// Returns true if a private-key file is set, and the file exists.
         /// </summary>
-        public bool isPrivateKeyValid
+        public bool IsPrivateKeyValid
         {
             get { return !string.IsNullOrWhiteSpace(Account.PrivateKeyFile) && File.Exists(Account.PrivateKeyFile); }
         }
@@ -121,10 +131,10 @@ namespace FTPboxLib
         {
             get
             {
-                if (!isPrivateKeyValid || !string.IsNullOrWhiteSpace(Account.Password)) return false;
+                if (!IsPrivateKeyValid || !string.IsNullOrWhiteSpace(Account.Password)) return false;
 
-                var _privateKeyRegex = new Regex("^-+ *BEGIN (?<keyName>\\w+( \\w+)*) PRIVATE KEY *-+\\r?\\n(Proc-Type: 4,ENCRYPTED\\r?\\nDEK-Info: (?<cipherName>[A-Z0-9-]+),(?<salt>[A-F0-9]+)\\r?\\n\\r?\\n)?(?<data>([a-zA-Z0-9/+=]{1,80}\\r?\\n)+)-+ *END \\k<keyName> PRIVATE KEY *-+", RegexOptions.Multiline | RegexOptions.Compiled);
-                var match = _privateKeyRegex.Match(File.ReadAllText(Account.PrivateKeyFile));
+                var privateKeyRegex = new Regex("^-+ *BEGIN (?<keyName>\\w+( \\w+)*) PRIVATE KEY *-+\\r?\\n(Proc-Type: 4,ENCRYPTED\\r?\\nDEK-Info: (?<cipherName>[A-Z0-9-]+),(?<salt>[A-F0-9]+)\\r?\\n\\r?\\n)?(?<data>([a-zA-Z0-9/+=]{1,80}\\r?\\n)+)-+ *END \\k<keyName> PRIVATE KEY *-+", RegexOptions.Multiline | RegexOptions.Compiled);
+                var match = privateKeyRegex.Match(File.ReadAllText(Account.PrivateKeyFile));
                 var cipher = match.Result("${cipherName}");
                 var salt = match.Result("${salt}");
 
@@ -135,36 +145,89 @@ namespace FTPboxLib
         /// <summary>
         /// Returns true if the account is set but the password/pass-phrase is required.
         /// </summary>
-        public bool isPasswordRequired
+        public bool IsPasswordRequired
         {
             get
             {
-                return (isAccountSet && string.IsNullOrWhiteSpace(Account.Password) && !isPrivateKeyValid) ||
-                        (isPrivateKeyValid && PrivateKeyPassPhraseRequired);
+                return (IsAccountSet && string.IsNullOrWhiteSpace(Account.Password) && !IsPrivateKeyValid) ||
+                        (IsPrivateKeyValid && PrivateKeyPassPhraseRequired);
             }
         }
+
+        /// <summary>
+        /// true if a valid permission mode was loaded from the configuration file
+        /// </summary>
+        public bool SetPermissionsAfterUpload 
+            => Regex.IsMatch(this.Account.ForcePermissions, "^[0-7]{3,4}$");
 
         #endregion
 
         #region Methods
 
-        /// <summary>
-        /// Whether the specified path should be synced. Used in selective sync and to avoid syncing the webUI folder, temp files and invalid file/folder-names.
-        /// </summary>
-        public bool ItemGetsSynced(string name)
+        public bool ItemSkipped(string localPath)
         {
-            if (name.EndsWith("/"))
-                name = name.Substring(0, name.Length - 1);
-            string aName = Common._name(name);
+            if (Common.PathIsFile(localPath))
+            {
+                return ItemSkipped(new FileInfo(localPath));
+            }
+            else
+            {
+                return ItemSkipped(new DirectoryInfo(localPath));
+            }
+        }
 
-            bool b = !(IgnoreList.IsIgnored(name)
-                || name.Contains("webint") || name.EndsWith(".") || name.EndsWith("..")                 //web interface, current and parent folders are ignored
-                || aName == ".ftpquota" || aName == "error_log" || aName.StartsWith(".bash")            //server files are ignored
-                || !Common.IsAllowedFilename(aName)                                                     //checks characters not allowed in windows file/folder names
-                || aName.StartsWith("~ftpb_")                                                           //FTPbox-generated temporary files are ignored
-                );
+        public bool ItemSkipped(ClientItem item)
+        {
+            var cpath = GetCommonPath(item.FullPath, false);
 
-            return b;
+            if (cpath.EndsWith("/"))
+                cpath = cpath.Substring(0, cpath.Length - 1);
+
+            return ItemSkipped(cpath, item.Name) || IgnoreList.IsIgnored(cpath) || IgnoreList.IsFilteredOut(item);
+        }
+
+        public bool ItemSkipped(FileInfo fInfo)
+        {
+            var cpath = GetCommonPath(fInfo.FullName, true);
+
+            if (cpath.EndsWith("/"))
+                cpath = cpath.Substring(0, cpath.Length - 1);
+
+            return ItemSkipped(cpath, fInfo.Name) || IgnoreList.IsIgnored(cpath) || IgnoreList.IsFilteredOut(fInfo);
+        }
+
+        public bool ItemSkipped(DirectoryInfo dInfo)
+        {
+            var cpath = GetCommonPath(dInfo.FullName, true);
+
+            if (cpath.EndsWith("/"))
+                cpath = cpath.Substring(0, cpath.Length - 1);
+
+            return ItemSkipped(cpath, dInfo.Name) || IgnoreList.IsIgnored(cpath);
+        }
+
+        private bool ItemSkipped(string cpath, string name)
+        {
+            if (name == "." || name == "..")
+                return true;
+
+            if (!Common.IsAllowedFilename(name))
+            {
+                Log.Write(l.Debug, $"File ignored because of its name isnt allowed: {cpath}");
+                return true;
+            }
+            if (name.StartsWith(Account.TempFilePrefix))
+            {
+                Log.Write(l.Debug, $"File ignored because of it has the temp prefix ({Account.TempFilePrefix}): {cpath}");
+                return true;
+            }
+            if (cpath.Contains("webint"))
+            {
+                Log.Write(l.Debug, $"File ignored because it contains webint: {cpath}");
+                return true;
+            }
+
+            return IgnoreList.IsIgnored(cpath);
         }
 
         /// <summary>
@@ -195,28 +258,28 @@ namespace FTPboxLib
             if (!fromLocal)
             {
                 // Remove the remote path from the begining
-                if (this.Paths.Remote != null && p.StartsWith(this.Paths.Remote))
+                if (Paths.Remote != null && p.StartsWith(Paths.Remote))
                 {
-                    if (p.StartsWithButNotEqual(this.Paths.Remote))
-                        p = p.Substring(this.Paths.Remote.Length);
+                    if (p.StartsWithButNotEqual(Paths.Remote))
+                        p = p.Substring(Paths.Remote.Length);
                 }
                 // If path starts with homepath instead, remove the home path from the begining
-                else if (HomePath != String.Empty && !HomePath.Equals("/"))
+                else if (HomePath != string.Empty && !HomePath.Equals("/"))
                 {
                     if (p.StartsWithButNotEqual(HomePath) || p.StartsWithButNotEqual(HomePath.RemoveSlashes()) || p.RemoveSlashes().StartsWithButNotEqual(HomePath))
                         p = p.Substring(HomePath.Length + 1);
                     // ... and then remove the remote path
-                    if (this.Paths.Remote != null && p.StartsWithButNotEqual(this.Paths.Remote))
-                        p = p.Substring(this.Paths.Remote.Length);
+                    if (Paths.Remote != null && p.StartsWithButNotEqual(Paths.Remote))
+                        p = p.Substring(Paths.Remote.Length);
                 }
             }
             if (fromLocal || File.Exists(p) || Directory.Exists(p))
             {
-                if (p.Equals(this.Paths.Local)) return ".";
+                if (p.Equals(Paths.Local)) return ".";
 
-                if (!String.IsNullOrWhiteSpace(this.Paths.Local) && p.StartsWith(this.Paths.Local))
+                if (!string.IsNullOrWhiteSpace(Paths.Local) && p.StartsWith(Paths.Local))
                 {
-                    p = p.Substring(this.Paths.Local.Length);
+                    p = p.Substring(Paths.Local.Length);
                     p.ReplaceSlashes();
                 }
             }
@@ -227,7 +290,7 @@ namespace FTPboxLib
             if (p.StartsWith("./"))
                 p = p.Substring(2);
 
-            if (String.IsNullOrWhiteSpace(p))
+            if (string.IsNullOrWhiteSpace(p))
                 p = "/";
 
             return p.ReplaceSlashes();
@@ -241,9 +304,9 @@ namespace FTPboxLib
         /// </param>
         public string GetHttpLink(string file)
         {
-            string cpath = GetCommonPath(file, true);
+            var cpath = GetCommonPath(file, true);
 
-            string newlink = this.Paths.Parent.RemoveSlashes() + @"/";
+            var newlink = Paths.Parent.RemoveSlashes() + @"/";
 
             if (!newlink.RemoveSlashes().StartsWith("http://") && !newlink.RemoveSlashes().StartsWith("https://"))
                 newlink = @"http://" + newlink;
@@ -254,7 +317,7 @@ namespace FTPboxLib
             if (cpath.StartsWith("/"))
                 cpath = cpath.Substring(1);
 
-            newlink = String.Format("{0}/{1}", newlink, cpath);
+            newlink = string.Format("{0}/{1}", newlink, cpath);
             newlink = newlink.Replace(@" ", @"%20");
 
             return newlink;
@@ -275,7 +338,7 @@ namespace FTPboxLib
         /// <param name="index">item's index in list</param>        
         public string PathToRecent(int index = 0)
         {
-            return Path.Combine(this.Paths.Local, RecentList[index].CommonPath);
+            return Path.Combine(Paths.Local, RecentList[index].CommonPath);
         }
 
         /// <summary>
@@ -286,9 +349,9 @@ namespace FTPboxLib
         {
             Common.LocalFolders.Clear();
             Common.LocalFiles.Clear();
-            if (Directory.Exists(this.Paths.Local))
+            if (Directory.Exists(Paths.Local))
             {
-                var d = new DirectoryInfo(this.Paths.Local);
+                var d = new DirectoryInfo(Paths.Local);
                 foreach (var di in d.GetDirectories("*", SearchOption.AllDirectories))
                     Common.LocalFolders.Add(di.FullName);
 
@@ -297,6 +360,27 @@ namespace FTPboxLib
             }
             Log.Write(l.Info, "Loaded {0} local directories and {1} files", Common.LocalFolders.Count, Common.LocalFiles.Count);
         }
+
+        /// <summary>
+        /// Get absolute path from common path
+        /// </summary>
+        public string AbsolutePath(string cpath)
+        {
+            if (cpath == ".")
+                cpath = string.Empty;
+
+            string root = Paths.Remote;
+            if (root == "/" || root.EndsWith("/"))
+            {
+                return root + cpath;
+            }
+            else
+            {
+                return $"{root}/{cpath}";
+            }
+        }
+
+        internal TransferValidator TransferValidator;
 
         #endregion
     }

@@ -14,17 +14,14 @@
 using System;
 using System.IO;
 using System.Net;
-using FTPbox.Classes;
-using Newtonsoft.Json;
-using System.Threading;
 using Ionic.Zip;
+using Newtonsoft.Json;
+using System.Threading.Tasks;
 
 namespace FTPboxLib
 {
     public class WebInterface
     {
-        private Thread _wiThread;                   // Upload or remove the web interface thread
-
         public bool UpdatePending;
         public bool DeletePending;
 
@@ -32,45 +29,25 @@ namespace FTPboxLib
         public event EventHandler InterfaceUploaded;
         public event EventHandler InterfaceRemoved;
 
-        private AccountController controller;
+        private readonly AccountController _controller;
 
         public WebInterface(AccountController account)
         {
-            this.controller = account;
-            _wiThread = new Thread(StartUpdate);
-        }
-
-        /// <summary>
-        /// Does the Web Interface exist on the user's folder?
-        /// </summary>
-        public bool Exists
-        {
-            get
-            {
-                bool e = controller.Client.Exists("webint");
-                if (e) CheckForUpdate();
-                return e;
-            }
-        }
-
-        public void Update()
-        {
-            _wiThread = new Thread(StartUpdate);
-            _wiThread.Start();
+            _controller = account;
         }
 
         /// <summary>
         /// Update or remove the web interface
         /// </summary>
-        private void StartUpdate()
+        public async Task Update()
         {
             if (UpdatePending)
             {
-                Delete(true);
+                await Delete(true);
                 DownloadFiles();
             }
             else if (DeletePending)
-                Delete(false);
+                await Delete(false);
 
             UpdatePending = false;
             DeletePending = false;
@@ -86,13 +63,13 @@ namespace FTPboxLib
             Notifications.Show(WebUiAction.waiting);
 
             const string dllink = "http://ftpbox.org/webint.zip";
-            string webuiPath = Path.Combine(Common.AppdataFolder, "webint.zip");
+            var webuiPath = Path.Combine(Common.AppdataFolder, "webint.zip");
             //DeleteWebInt();
             var wc = new WebClient();
-            wc.DownloadFileCompleted += (o, e) =>
+            wc.DownloadFileCompleted += async (o, e) =>
             {
                 if (e.Error == null && !e.Cancelled)
-                    ExtractAndUpload();
+                    await ExtractAndUpload();
             };
             wc.DownloadFileAsync(new Uri(dllink), webuiPath);
         }
@@ -100,11 +77,11 @@ namespace FTPboxLib
         /// <summary>
         /// Upload the files for the Web Interface
         /// </summary>
-        private void UploadFiles()
+        private async Task UploadFiles()
         {
             Notifications.ChangeTrayText(MessageType.Syncing);
 
-            string path = Common.AppdataFolder + @"\WebInterface";
+            var path = Common.AppdataFolder + @"\WebInterface";
 
             Console.WriteLine();
             foreach (var d in Directory.GetDirectories(path, "*", SearchOption.AllDirectories))
@@ -114,7 +91,7 @@ namespace FTPboxLib
                 fname = fname.Replace(@"\", @"/");
                 Console.Write("\r Creating: {0,50}", fname);
                 // Create folder
-                controller.Client.MakeFolder(fname);
+                await _controller.Client.MakeFolder(fname);
             }
             Console.WriteLine();
             foreach (var f in Directory.GetFiles(path, "*", SearchOption.AllDirectories))
@@ -124,7 +101,7 @@ namespace FTPboxLib
                 fname = fname.ReplaceSlashes();
                 Console.Write("\r Uploading: {0,50}", fname);
                 // Upload file
-                controller.Client.Upload(f, fname);
+                await _controller.Client.Upload(f, fname);
             }
             Console.WriteLine();
 
@@ -149,11 +126,11 @@ namespace FTPboxLib
         /// Delete the Web Interface from the user's remote folder
         /// </summary>
         /// <param name="updating"><c>true</c> when updating, <c>false</c> when removing</param>
-        private void Delete(bool updating)
+        private async Task Delete(bool updating)
         {
             Notifications.Show(updating ? WebUiAction.updating : WebUiAction.removing);
 
-            controller.Client.RemoveFolder("webint", false);
+            await _controller.Client.RemoveFolder("webint", false);
 
             if (!updating)
             {
@@ -163,51 +140,58 @@ namespace FTPboxLib
         }
 
         /// <summary>
-        /// Download the user's webUI version file, compare the version with the latest one
+        /// Does the Web Interface exist on the user's folder? 
+        /// If yes, check for outdated version
+        /// TODO: redo update process
         /// </summary>
-        private void CheckForUpdate()
+        public async Task<bool> CheckForUpdate()
         {
-            try
+            var exists = _controller.Client.Exists("webint");
+
+            if (exists)
             {
-                string lpath = Path.Combine(Common.AppdataFolder, @"version.ini");
-                controller.Client.Download("webint/version.ini", lpath);
-
-                var ini = new IniFile(lpath);
-                string currentversion = ini.ReadValue("Version", "latest");
-
-                var wc = new WebClient();
-                wc.DownloadStringCompleted += (s, e) =>
+                try
                 {
-                    var vinfo = (WebInterfaceVersionInfo)JsonConvert.DeserializeObject(e.Result, typeof(WebInterfaceVersionInfo));
+                    var lpath = Path.Combine(Common.AppdataFolder, @"version.ini");
+                    await _controller.Client.Download("webint/version.ini", lpath);
 
-                    if (!vinfo.uptodate)
-                        UpdateFound.SafeInvoke(null, EventArgs.Empty);
-                    else
-                        Log.Write(l.Client, "Web Interface is up to date");
+                    var currentversion = "0.2.3";
 
-                    File.Delete(lpath);
-                };
-                string link = string.Format("http://ftpbox.org/webui.php?version={0}", currentversion);
-                
-                wc.DownloadStringAsync(new Uri(link));
+                    var wc = new WebClient();
+                    wc.DownloadStringCompleted += (s, e) =>
+                    {
+                        var vinfo = (WebInterfaceVersionInfo)JsonConvert.DeserializeObject(e.Result, typeof(WebInterfaceVersionInfo));
+
+                        if (!vinfo.Uptodate)
+                            UpdateFound.SafeInvoke(null, EventArgs.Empty);
+                        else
+                            Log.Write(l.Client, "Web Interface is up to date");
+
+                        File.Delete(lpath);
+                    };
+                    var link = string.Format("http://ftpbox.org/webui.php?version={0}", currentversion);
+
+                    wc.DownloadStringAsync(new Uri(link));
+                }
+                catch (Exception ex)
+                {
+                    Log.Write(l.Warning, "Error with version checking");
+                    ex.LogException();
+                }
             }
-            catch (Exception ex)
-            {
-                Log.Write(l.Warning, "Error with version checking");
-                Common.LogError(ex);
-            }
+            return exists;
         }
 
         /// <summary>
         /// Extract the downloaded zip file into AppData
         /// and start uploading the files
         /// </summary>
-        private void ExtractAndUpload()
+        private async Task ExtractAndUpload()
         {
-            string webuiPath = Path.Combine(Common.AppdataFolder, "webint.zip");
+            var webuiPath = Path.Combine(Common.AppdataFolder, "webint.zip");
 
-            using (ZipFile zip = ZipFile.Read(webuiPath))
-                foreach (ZipEntry en in zip)
+            using (var zip = ZipFile.Read(webuiPath))
+                foreach (var en in zip)
                     en.Extract(Path.Combine(Common.AppdataFolder, "WebInterface"), ExtractExistingFileAction.OverwriteSilently);
 
             Log.Write(l.Info, "WebUI unzipped");
@@ -215,11 +199,11 @@ namespace FTPboxLib
 
             try
             {
-                UploadFiles();
+                await UploadFiles();
             }
             catch (Exception ex)
             {
-                Common.LogError(ex);
+                ex.LogException();
             }
         }
 
@@ -229,7 +213,7 @@ namespace FTPboxLib
         /// </summary>
         private void CheckForFiles()
         {
-            string p = Common.AppdataFolder;
+            var p = Common.AppdataFolder;
             if (File.Exists(p + @"\webint.zip"))
                 File.Delete(p + @"\webint.zip");
             if (Directory.Exists(p + @"\webint"))
@@ -243,7 +227,7 @@ namespace FTPboxLib
 
     class WebInterfaceVersionInfo
     {
-        public bool uptodate;
+        public bool Uptodate;
 
         //TODO: file/folder list?
     }

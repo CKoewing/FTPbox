@@ -10,59 +10,50 @@
  * Watch for changes in the local folder and add any changes to the SyncQueue
  */
 
-// #define __MonoCs__
-
+using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace FTPboxLib
 {
     public class FolderWatcher
     {
-        private FileSystemWatcher _fswFiles;
-        private FileSystemWatcher _fswFolders;
+        private FileSystemWatcher _fsWatcher;
 
-        private AccountController controller;
+        private readonly AccountController _controller;
 
         public FolderWatcher (AccountController account)
         {
-            this.controller = account;
+            _controller = account;
         }
 
         /// <summary>
-        /// Sets the file watchers for the local directory.
+        /// Sets the file watcher for the local directory.
         /// </summary>
         public void Setup()
         {
-            Log.Write(l.Debug, "Setting the file system watchers");
+            Log.Write(l.Debug, "Setting up the file system watcher");
 
-            _fswFiles = new FileSystemWatcher();
-            _fswFolders = new FileSystemWatcher();
-            _fswFiles.Path = controller.Paths.Local;
-            _fswFolders.Path = controller.Paths.Local;
-            _fswFiles.NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite;
-            _fswFolders.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.DirectoryName;
+            _fsWatcher = new FileSystemWatcher
+            {
+                Path = _controller.Paths.Local,
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName,
+                Filter = "*",
+                IncludeSubdirectories = true
+            };
 
-            _fswFiles.Filter = "*";
-            _fswFolders.Filter = "*";
+            // add event handlers
+            _fsWatcher.Changed += OnChanged;
+            _fsWatcher.Created += OnChanged;
+            _fsWatcher.Deleted += OnDeleted;
+            _fsWatcher.Renamed += OnRenamed;
 
-            _fswFiles.IncludeSubdirectories = true;
-            _fswFolders.IncludeSubdirectories = true;
+            // Start watching
+            _fsWatcher.EnableRaisingEvents = true;
 
-            // add event handlers for files:
-            _fswFiles.Changed += FileChanged;
-            _fswFiles.Created += FileChanged;
-            _fswFiles.Deleted += OnDeleted;
-            _fswFiles.Renamed += OnRenamed;
-            // and for folders:
-            //fswFolders.Changed += new FileSystemEventHandler(FolderChanged);
-            _fswFolders.Created += FolderChanged;
-            _fswFolders.Deleted += OnDeleted;
-            _fswFolders.Renamed += OnRenamed;
-
-            _fswFiles.EnableRaisingEvents = true;
-            _fswFolders.EnableRaisingEvents = true;
-
-            Log.Write(l.Debug, "File system watchers setup completed!");
+            Log.Write(l.Debug, "Ready.");
         }
 
         /// <summary>
@@ -70,8 +61,7 @@ namespace FTPboxLib
         /// </summary>
         public void Pause()
         {
-            _fswFiles.EnableRaisingEvents = false;
-            _fswFolders.EnableRaisingEvents = false;
+            _fsWatcher.EnableRaisingEvents = false;
         }
 
         /// <summary>
@@ -79,137 +69,136 @@ namespace FTPboxLib
         /// </summary>
         public void Resume()
         {
-            _fswFiles.EnableRaisingEvents = true;
-            _fswFolders.EnableRaisingEvents = true;
+            _fsWatcher.EnableRaisingEvents = true;
+        }
+
+        Dictionary<string, DateTime> raisedList = new Dictionary<string, DateTime>();
+
+        // avoid queuing the same file multiple times
+        private bool isRecentlyRaised(string path)
+        {
+            if (raisedList.ContainsKey(path))
+            {
+                var t = raisedList[path];
+
+                if (DateTime.Now.Subtract(t).TotalSeconds < 1)
+                    return true;
+
+                raisedList[path] = DateTime.Now;
+            }
+            else
+            {
+                raisedList.Add(path, DateTime.Now);
+            }
+            return false;
         }
 
         #region Private Handlers
 
         /// <summary>
-        /// Raised when a file was changed
+        /// Raised when a file or folder is changed
         /// </summary>
-        /// <param name="source"></param>
-        /// <param name="e"></param>
-        private void FileChanged(object source, FileSystemEventArgs e)
+        private async void OnChanged(object source, FileSystemEventArgs e)
         {
-            string cpath = controller.GetCommonPath(e.FullPath, true);
-            if (!controller.ItemGetsSynced(cpath) || !File.Exists(e.FullPath)) return;
+            if (isRecentlyRaised(e.FullPath))
+                return;
 
-            int retries = 0;
-            while (true)
+            if (_controller.ItemSkipped(e.FullPath) || (!File.Exists(e.FullPath) && !Directory.Exists(e.FullPath))) return;
+
+            var retries = 0;
+            if (File.Exists(e.FullPath))
             {
-                if (!Common.FileIsUsed(e.FullPath)) break;
-                // Exit after 5 retries
-                if (retries > 5) return;
-                // Sleep for half a second, then check again
-                System.Threading.Thread.Sleep(500);
-                retries++;
+                // avoid queuing the same file multiple times
+                while (true)
+                {
+                    if (!Common.FileIsUsed(e.FullPath)) break;
+                    // Exit after 5 retries
+                    if (retries > 5) return;
+                    // Sleep for a 10th of a second, then check again
+                    Thread.Sleep(100);
+                    retries++;
+                }
             }
-
-        #if __MonoCs__
-            // Ignore temp files on linux
-            if (Common._name(cpath).StartsWith(".goutputstream-") || Common._name(cpath).EndsWith("~")) return;
-        #endif
-
-            var fli = new FileInfo(e.FullPath);
-
-            controller.SyncQueue.Add(new SyncQueueItem(controller)
-            {
-                Item = new ClientItem
-                {
-                    Name = e.Name,
-                    FullPath = e.FullPath,
-                    Type = ClientItemType.File,
-                    Size = fli.Length,
-                    LastWriteTime = fli.LastWriteTime
-                },
-                SyncTo = SyncTo.Remote,
-                ActionType = e.ChangeType == WatcherChangeTypes.Changed ? ChangeAction.changed : ChangeAction.created
-            });
-        }
-
-        /// <summary>
-        /// Raised when a folder was changed
-        /// </summary>
-        /// <param name="source"></param>
-        /// <param name="e"></param>
-        private void FolderChanged(object source, FileSystemEventArgs e)
-        {
-            string cpath = controller.GetCommonPath(e.FullPath, true);
-            if (!controller.ItemGetsSynced(cpath) || !Directory.Exists(e.FullPath)) return;
-        #if __MonoCs__
-            // Ignore temp files on linux
-            if (Common._name(cpath).StartsWith(".goutputstream-") || Common._name(cpath).EndsWith("~")) return;
-        #endif
-
-            controller.SyncQueue.Add(new SyncQueueItem(controller)
-            {
-                Item = new ClientItem
-                {
-                    Name = e.Name,
-                    FullPath = e.FullPath,
-                    Type = ClientItemType.Folder,
-                    Size = 0x0,
-                    LastWriteTime = File.GetLastWriteTime(e.FullPath)
-                },
-                SyncTo = SyncTo.Remote,
-                ActionType = ChangeAction.changed
-            });
+            // Add to queue
+            var actionType = e.ChangeType == WatcherChangeTypes.Changed ? ChangeAction.changed : ChangeAction.created;
+            await AddToQueue(e, actionType);
         }
 
         /// <summary>
         /// Raised when either a file or a folder was deleted.
         /// </summary>
-        /// <param name="source"></param>
-        /// <param name="e"></param>
-        private void OnDeleted(object source, FileSystemEventArgs e)
+        private async void OnDeleted(object source, FileSystemEventArgs e)
         {
-            string cpath = controller.GetCommonPath(e.FullPath, true);
-            if (!controller.ItemGetsSynced(cpath)) return;
-        #if __MonoCs__
-            // Ignore temp files on linux
-            if (Common._name(cpath).StartsWith(".goutputstream-") || Common._name(cpath).EndsWith("~")) return;
-        #endif
-            controller.SyncQueue.Add(new SyncQueueItem(controller)
-            {
-                Item = new ClientItem
-                {
-                    Name = e.Name,
-                    FullPath = e.FullPath,
-                    Type = Common.PathIsFile(e.FullPath) ? ClientItemType.File : ClientItemType.Folder,
-                    Size = 0x0,
-                    LastWriteTime = File.GetLastWriteTime(e.FullPath)
-                },
-                SyncTo = SyncTo.Remote,
-                ActionType = ChangeAction.deleted
-            });
+            if (_controller.ItemSkipped(e.FullPath)) return;
+            // Add to queue
+            await AddToQueue(e, ChangeAction.deleted);
         }
 
         /// <summary>
         /// Raised when file/folder is renamed
         /// </summary>
-        private void OnRenamed(object source, RenamedEventArgs e)
+        private async void OnRenamed(object source, RenamedEventArgs e)
         {
-            Log.Write(l.Debug, "Item {0} was renamed", e.OldName);
-            if (!controller.ItemGetsSynced(controller.GetCommonPath(e.FullPath, true)) || !controller.ItemGetsSynced(controller.GetCommonPath(e.OldFullPath, true)))
+            Log.Write(l.Debug, $"Item was renamed: {e.OldName}");
+
+            if (_controller.ItemSkipped(e.FullPath))
                 return;
 
-            controller.SyncQueue.Add(new SyncQueueItem(controller)
-            {
-                Item = new ClientItem
-                {
-                    Name = e.Name,
-                    FullPath = e.OldFullPath,
-                    NewFullPath = e.FullPath,
-                    Type = Common.PathIsFile(e.FullPath) ? ClientItemType.File : ClientItemType.Folder,
-                    Size = Common.PathIsFile(e.FullPath) ? new FileInfo(e.FullPath).Length : 0x0,
-                    LastWriteTime = File.GetLastWriteTime(e.FullPath)
-                },
-                SyncTo = SyncTo.Remote,
-                ActionType = ChangeAction.renamed
-            });
+            var isFile = Common.PathIsFile(e.FullPath);
+            // Find if renamed from/to temporary file
+            var renamedFromTempFile = new FileInfo(e.OldFullPath).Attributes.HasFlag(FileAttributes.Temporary);
+            var renamedToTempFile = new FileInfo(e.FullPath).Attributes.HasFlag(FileAttributes.Temporary);
+            // Get common path to old (renamed) file
+            var oldCommon = _controller.GetCommonPath(e.OldFullPath, true);
+
+            Log.Write(l.Debug, $"isFile: {isFile} renamedFromTempFile: {renamedFromTempFile} renamedToTempFile: {renamedToTempFile} inFileLog: {_controller.FileLog.Contains(oldCommon)}");
+
+            // Add to queue
+            if (isFile && renamedFromTempFile && !renamedToTempFile && !_controller.FileLog.Contains(oldCommon))
+                await AddToQueue(e, ChangeAction.changed);
+            else
+                await AddToQueue(e, ChangeAction.renamed);
         }
         
         #endregion
+
+        /// <summary>
+        /// Creates the SyncQueueItem from the given data and adds it to the sync queue
+        /// </summary>
+        private async Task AddToQueue(FileSystemEventArgs e, ChangeAction action)
+        {
+            var isFile = Common.PathIsFile(e.FullPath);
+            // ignore directory changes
+            if (!isFile && action == ChangeAction.changed) return;
+
+            var queueItem = new SyncQueueItem(_controller)
+                {
+                    Item = new ClientItem
+                        {
+                            Name = e.Name,
+                            FullPath = e.FullPath,
+                            Type = isFile ? ClientItemType.File : ClientItemType.Folder,
+                            Size = (isFile && action != ChangeAction.deleted) ? new FileInfo(e.FullPath).Length : 0x0,
+                            LastWriteTime = File.GetLastWriteTime(e.FullPath)
+                        },
+                    SyncTo = SyncTo.Remote,
+                    ActionType = action
+                };
+
+            if (action == ChangeAction.renamed)
+            {
+                var args = e as RenamedEventArgs;
+                if (args != null)
+                {
+                    queueItem.Item.FullPath = args.OldFullPath;
+                    queueItem.Item.NewFullPath = args.FullPath;
+                }
+            }
+
+            Log.Write(l.Client, $"Action: {action} Item: {queueItem.CommonPath}");
+
+            // Send to the sync queue
+            await _controller.SyncQueue.Add(queueItem);
+        }
     }
 }

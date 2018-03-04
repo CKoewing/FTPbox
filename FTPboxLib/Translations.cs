@@ -11,19 +11,21 @@
  */
 
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Xml;
 
 namespace FTPboxLib
 {
     public class Translations
     {
-        XmlDocument xmlDocument = new XmlDocument();       
-        string documentPath = Environment.CurrentDirectory + "\\translations.xml";
+        readonly XmlDocument _xmlDocument = new XmlDocument();
+        readonly string _documentPath = Environment.CurrentDirectory + "\\translations.xml";
 
         public Translations()
         {
-            try { xmlDocument.Load(documentPath); }
-            catch (Exception ex) { Log.Write(l.Info, "?>" + ex.Message); xmlDocument.LoadXml("<translations></translations>"); }
+            try { _xmlDocument.Load(_documentPath); }
+            catch (Exception ex) { Log.Write(l.Info, "?>" + ex.Message); _xmlDocument.LoadXml("<translations></translations>"); }
         }
 
         public string this[MessageType t]
@@ -118,7 +120,7 @@ namespace FTPboxLib
         {
             get
             {
-                string fileorfolder = (file) ? this[MessageType.File] : this[MessageType.Folder];
+                var fileorfolder = (file) ? this[MessageType.File] : this[MessageType.Folder];
                 switch (ca)
                 {
                     case ChangeAction.created:
@@ -213,6 +215,8 @@ namespace FTPboxLib
                         return Get("/main_form/enable_logging", "Enable Logging");
                     case UiControl.ViewLog:
                         return Get("/main_form/view_log", "View Log");
+                    case UiControl.AddShellMenu:
+                        return Get("/main_form/shell_menus", "Add to context menu");
                     case UiControl.Account:
                         return Get("/main_form/account", "Account");
                     case UiControl.Profile:
@@ -229,6 +233,16 @@ namespace FTPboxLib
                         return Get("/web_interface/use_webint", "Use the Web Interface");
                     case UiControl.ViewInBrowser:
                         return Get("/web_interface/view", "(View in browser)");
+                    case UiControl.WayOfSync:
+                        return Get("/main_form/way_of_sync", "Way of synchronization") + ":";
+                    case UiControl.LocalToRemoteSync:
+                        return Get("/main_form/local_to_remote", "Local to remote only");
+                    case UiControl.RemoteToLocalSync:
+                        return Get("/main_form/remote_to_local", "Remote to local only");
+                    case UiControl.BothWaysSync:
+                        return Get("/main_form/both_ways", "Both ways");
+                    case UiControl.TempNamePrefix:
+                        return Get("/main_form/temp_file_prefix", "Temporary file prefix") + ":";
                     case UiControl.Filters:
                         return Get("/main_form/file_filters", "Filters");
                     case UiControl.Configure:
@@ -297,6 +311,8 @@ namespace FTPboxLib
 
                     case UiControl.RecentFiles:
                         return Get("/tray/recent_files", "Recent Files");
+                    case UiControl.Modified:
+                        return Get("/tray/modified", "Modified");
                     case UiControl.StartSync:
                         return Get("/tray/start_syncing", "Start Syncing");
                     case UiControl.Exit:
@@ -331,9 +347,26 @@ namespace FTPboxLib
         public string Get(string xPath, string defaultValue, string lan = null)
         {
             var path = string.Format("translations/{0}{1}", lan ?? Settings.General.Language, xPath);
-            XmlNode xmlNode = xmlDocument.SelectSingleNode(path);
-            if (xmlNode != null) { return xmlNode.InnerText.Replace("_and", "&"); }
-            else { return defaultValue; }
+            var xmlNode = _xmlDocument.SelectSingleNode(path);
+            return xmlNode != null ? xmlNode.InnerText.Replace("_and", "&") : defaultValue;
+        }
+
+        /// <summary>
+        /// Returns a list of all paths to nodes that contain translation strings
+        /// </summary>
+        public List<string> GetPaths()
+        {
+            if (_xmlDocument != null)
+            {
+                var nodes = _xmlDocument.SelectNodes("translations/en/*/*");
+                if (nodes != null)
+                {
+                    var result = nodes.Cast<XmlNode>()
+                        .Select(x => x.ParentNode != null ? string.Format("/{0}/{1}", x.ParentNode.Name, x.Name) : null);
+                    return result.ToList();
+                }
+            }
+            return new List<string>();
         }
         
         #endregion

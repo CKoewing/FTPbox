@@ -14,6 +14,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 
 namespace FTPboxLib
@@ -61,7 +62,7 @@ namespace FTPboxLib
         /// <returns></returns>
         public static string FormatDate(this DateTime date)
         {
-            return (date.Date == DateTime.Today) ? date.ToString("HH:mm") : date.ToString("MM-dd-yy");
+            return (date.Date == DateTime.Today) ? date.ToString("HH:mm") : date.ToString("dd-MM-yyy");
         }
 
         /// <summary>
@@ -69,7 +70,7 @@ namespace FTPboxLib
         /// </summary>
         public static DateTime LatestChangeTime(this FileLogItem item)
         {
-            return DateTime.Compare(item.Remote, item.Local) < 0 ? item.Remote : item.Local;
+            return DateTime.Compare(item.Remote, item.Local) > 0 ? item.Remote : item.Local;
         }
 
         /// <summary>
@@ -100,6 +101,14 @@ namespace FTPboxLib
         }
 
         /// <summary>
+        /// Safely invoke handler with specified type of EventArgs
+        /// </summary>
+        public static void SafeInvoke<TEventArgs>(this EventHandler<TEventArgs> handler, object sender, TEventArgs args) where TEventArgs : EventArgs
+        {
+            if (handler != null) handler(sender, args);
+        }
+
+        /// <summary>
         /// Gets the fingerprint from the given byte-array representation of the key
         /// </summary>
         /// <returns>fingerprint in string format</returns>
@@ -108,6 +117,43 @@ namespace FTPboxLib
             var sb = new StringBuilder();
             foreach (var b in key) sb.Append(String.Format("{0:x}:", b).PadLeft(3, '0'));
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Get the permissions of the specified file
+        /// </summary>
+        /// <param name="attr">The SftpFileAttributes object from which to obtain the permissions</param>
+        /// <returns>The permissions formatted in numeric notation</returns>
+        public static string Permissions(this Renci.SshNet.Sftp.SftpFileAttributes attr)
+        {
+            var p = (uint)attr.GetType().GetProperty("Permissions", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance).GetValue(attr, null);
+
+            return string.Format("{2}{1}{0}", p & (1 | 2 | 4), (p & (8 | 16 | 32)) >> 3, (p & (64 | 128 | 256)) >> 6);
+        }
+
+        /// <summary>
+        /// Get the permissions of the specified file
+        /// </summary>
+        /// <param name="f">The FtpListItem from which to obtain the permissions</param>
+        /// <returns>The permissions formatted in numeric notation</returns>
+        public static string Permissions(this System.Net.FtpClient.FtpListItem f)
+        {
+            return string.Format("{0}{1}{2}",
+                                 (uint) f.OwnerPermissions, (uint) f.GroupPermissions, (uint) f.OthersPermissions);
+        }
+
+        /// <summary>
+        /// displays details of the thrown exception in the console
+        /// </summary>
+        public static void LogException(this Exception error)
+        {
+            Log.Write(l.Error, "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+            Log.Write(l.Error, $"Message: {error.Message}");
+            Log.Write(l.Error, $"Source: {error.Source} Type: {error.GetType().ToString()}");
+            Log.Write(l.Error, $"StackTrace:\n{error.StackTrace}");
+            foreach (KeyValuePair<string, string> s in error.Data)
+                Log.Write(l.Error, "key: {0} value: {1}", s.Key, s.Value);
+            Log.Write(l.Error, "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
         }
     }
 }

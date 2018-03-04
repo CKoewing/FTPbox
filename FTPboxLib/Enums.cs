@@ -10,6 +10,8 @@
  * Contains all enums used in FTPboxLib
  */
 
+using System;
+
 namespace FTPboxLib
 {
 
@@ -48,6 +50,18 @@ namespace FTPboxLib
         File,
         Folder,
         Other
+    }
+
+    [Flags]
+    public enum HashingAlgorithm
+    {
+        NONE = 0,
+        SHA1 = 1,
+        SHA256 = 2,
+        SHA512 = 4,
+        MD5 = 8,
+        //CRC = 16
+        ServerDefaultHash = 32
     }
 
     /// <summary>
@@ -98,7 +112,8 @@ namespace FTPboxLib
     {
         Success,
         Failure,
-        Waiting
+        Waiting,
+        Skipped
     }
 
     public enum TransferStatus
@@ -112,6 +127,13 @@ namespace FTPboxLib
     {
         Remote,
         Local
+    }
+
+    public enum SyncDirection
+    {
+        Remote,
+        Local,
+        Both
     }
 
     public enum WebUiAction
@@ -133,15 +155,15 @@ namespace FTPboxLib
         Previous, Next, Finish,
 
         // Options
-        Options, General, Links, WhenRecentFileClicked, OpenUrl, CopyUrl, OpenLocal, Application, ShowNotifications, StartOnStartup, EnableLogging, ViewLog,
-        Account, Profile, Add, Remove, Details, WebUi, UseWebUi, ViewInBrowser,
+        Options, General, Links, WhenRecentFileClicked, OpenUrl, CopyUrl, OpenLocal, Application, ShowNotifications, StartOnStartup, EnableLogging, ViewLog, AddShellMenu,
+        Account, Profile, Add, Remove, Details, WebUi, UseWebUi, ViewInBrowser, WayOfSync, LocalToRemoteSync, RemoteToLocalSync, BothWaysSync, TempNamePrefix,
         Filters, Refresh, IgnoredExtensions, AlsoIgnore, Dotfiles, TempFiles, FilesModifiedBefore, Configure,
         Bandwidth, SyncFrequency, SyncWhen, AutoEvery, Seconds, Manually, SpeedLimits, DownLimit, UpLimit, NoLimits,
         Language,
         About, TheTeam, Website, Contact, CodedIn, Notes, Contribute, FreeAndAll, GetInTouch, ReportBug, RequestFeature, Donate,
 
         // Tray
-        RecentFiles, StartSync, Exit,
+        RecentFiles, StartSync, Exit, Modified,
 
         //  New Version
         UpdateAvailable, NewVersionAvailable, CurrentVersion, NewVersion, AskDownload, DownloadNow, LearnMore, RemindLater

@@ -12,39 +12,39 @@
 
 using System;
 using System.Collections.Generic;
-using System.Drawing;
-using System.Linq;
-using System.Windows.Forms;
-using System.Runtime.InteropServices;
-using System.Net;
-using System.IO;
 using System.Diagnostics;
+using System.Drawing;
+using System.IO;
+using System.Linq;
+using System.Net;
 using System.Net.NetworkInformation;
-using System.Threading;
-using Microsoft.Win32;
-using System.IO.Pipes;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using FTPbox.Properties;
 using FTPboxLib;
+using Microsoft.Win32;
+using Newtonsoft.Json;
+using Settings = FTPboxLib.Settings;
+using Squirrel;
 
 namespace FTPbox.Forms
 {
     public partial class fMain : Form
     {
-        public bool gotpaths = false;                       //if the paths have been set or checked
-        private bool changedfromcheck = true;
-
+        private bool _changedfromcheck = true;
+        private fSelectiveSync _fSelective;
         //Form instances
-        private Setup fSetup;
-        private Translate ftranslate;
-        private fSelectiveSync fSelective;
+        private Setup _fSetup;
+        private Translate _ftranslate;
+        private fTrayForm _fTrayForm;
 
-        private TrayTextNotificationArgs _lastTrayStatus = new TrayTextNotificationArgs
-            {AssossiatedFile = null, MessageType = MessageType.AllSynced};
-        
-        private System.Threading.Timer tRetry;
+        private TrayTextNotificationArgs _lastTrayStatus = new TrayTextNotificationArgs(MessageType.AllSynced);
 
+        public bool GotPaths; //if the paths have been set or checked
         //Links
-        public string link = string.Empty;                  //The web link of the last-changed file
-        public string locLink = string.Empty;               //The local path to the last-changed file
+        public string Link = string.Empty; //The web link of the last-changed file
+        public string LocLink = string.Empty; //The local path to the last-changed file
 
         public fMain()
         {
@@ -52,101 +52,106 @@ namespace FTPbox.Forms
             PopulateLanguages();
         }
 
-        private void fMain_Load(object sender, EventArgs e)
+        private async void fMain_Load(object sender, EventArgs e)
         {
-            NetworkChange.NetworkAddressChanged += OnNetworkChange;            
-            
+            NetworkChange.NetworkAddressChanged += OnNetworkChange;
+
             //TODO: Should this stay?
             Program.Account.LoadLocalFolders();
-            Load_Recent();
 
             if (!Log.DebugEnabled && Settings.General.EnableLogging)
                 Log.DebugEnabled = true;
 
             Notifications.NotificationReady += (o, n) =>
-                {
-                    link = Program.Account.LinkToRecent();
-                    tray.ShowBalloonTip(100, n.Title, n.Text, ToolTipIcon.Info);
-                };
-
-
-            Program.Account.FileLog.FileLogChanged += (o, n) => Load_Recent();
-
-            Program.Account.Client.ConnectionClosed += (o, n) => Log.Write(l.Warning, "Connection closed: {0}", n.Text ?? string.Empty);
-
-            Program.Account.Client.ReconnectingFailed += (o, n) => Log.Write(l.Warning, "Reconnecting failed"); //TODO: Use this...
-
-            Program.Account.Client.ValidateCertificate += CheckCertificate;
-
-            Program.Account.WebInterface.UpdateFound += (o, n) =>
-                {
-                    const string msg = "A new version of the web interface is available, do you want to upgrade to it?";
-                    if (MessageBox.Show(msg, "FTPbox - WebUI Update", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
-                    {
-                        Program.Account.WebInterface.UpdatePending = true;
-                        Program.Account.WebInterface.Update();
-                    }
-                };
-            Program.Account.WebInterface.InterfaceRemoved += (o, n) =>
-                {
-                    this.Invoke(new MethodInvoker(() =>
-                    {
-                        chkWebInt.Enabled = true;
-                        labViewInBrowser.Enabled = false;
-                    }));
-                    link = string.Empty;
-                };
-            Program.Account.WebInterface.InterfaceUploaded += (o, n) =>
-                {
-                    this.Invoke(new MethodInvoker(() =>
-                    {
-                        chkWebInt.Enabled = true;
-                        labViewInBrowser.Enabled = true;
-                    }));
-                    link = Program.Account.WebInterfaceLink;
-                };
-
-            Notifications.TrayTextNotification += (o,n) => this.Invoke(new MethodInvoker(() => SetTray(o,n)));
-
-            Program.Account.Client.TransferProgress += (o, n) =>
             {
-                // Only when Downloading/Uploading.
-                if (string.IsNullOrWhiteSpace(_lastTrayStatus.AssossiatedFile)) return;
-                // Update tray text.
-                this.Invoke(new MethodInvoker(() =>
-                    {
-                        SetTray(null, _lastTrayStatus);
-                        // Append progress details in a new line
-                        tray.Text += string.Format("\n{0,3}% - {1}", n.Progress, n.Rate);
-                    }));               
+                Link = Program.Account.LinkToRecent();
+                tray.ShowBalloonTip(100, n.Title, n.Text, ToolTipIcon.Info);
             };
-            fSetup = new Setup {Tag = this};
-            ftranslate = new Translate {Tag = this};
-            fSelective = new fSelectiveSync();
-            
+
+            Program.Account.WebInterface.UpdateFound += async (o, n) =>
+            {
+                const string msg = "A new version of the web interface is available, do you want to upgrade to it?";
+                if (
+                    MessageBox.Show(msg, "FTPbox - WebUI Update", MessageBoxButtons.YesNo, MessageBoxIcon.Information) ==
+                    DialogResult.Yes)
+                {
+                    Program.Account.WebInterface.UpdatePending = true;
+                    await Program.Account.WebInterface.Update();
+                }
+            };
+            Program.Account.WebInterface.InterfaceRemoved += (o, n) =>
+            {
+                chkWebInt.Enabled = true;
+                labViewInBrowser.Enabled = false;
+                Link = string.Empty;
+            };
+            Program.Account.WebInterface.InterfaceUploaded += (o, n) =>
+            {
+                chkWebInt.Enabled = true;
+                labViewInBrowser.Enabled = true;
+                Link = Program.Account.WebInterfaceLink;
+            };
+
+            Notifications.TrayTextNotification += (o, n) => SetTray(o, n);
+
+            _fSetup = new Setup {Tag = this};
+            _ftranslate = new Translate {Tag = this};
+            _fSelective = new fSelectiveSync();
+
             if (!string.IsNullOrEmpty(Settings.General.Language))
                 Set_Language(Settings.General.Language);
-            
-            StartUpWork();
 
-            CheckForUpdate();
+            await StartUpWork();
+
+            while (OfflineMode)
+            {
+                // wait 30 seconds before retrying to connect
+                await Task.Delay(30000);
+                // retry
+                await StartUpWork();
+            }
+
+            _fTrayForm = new fTrayForm { Tag = this };
+
+            await CheckForUpdate();
+
+            // Check local folder for changes
+            var cpath = Program.Account.GetCommonPath(Program.Account.Paths.Local, true);
+            await Program.Account.SyncQueue.Add(
+                new SyncQueueItem(Program.Account)
+                {
+                    Item = new ClientItem(Common._name(cpath), Program.Account.Paths.Local, ClientItemType.Folder),
+                    ActionType = ChangeAction.changed,
+                    SyncTo = SyncTo.Remote
+                });
+
+            await ContextMenuManager.RunServer();
         }
 
         /// <summary>
-        /// Work done at the application startup. 
-        /// Checks the saved account info, updates the form controls and starts syncing if syncing is automatic.
-        /// If there's no internet connection, puts the program to offline mode.
+        ///     Work done at the application startup.
+        ///     Checks the saved account info, updates the form controls and starts syncing if syncing is automatic.
+        ///     If there's no internet connection, puts the program to offline mode.
         /// </summary>
-        private void StartUpWork()
+        private async Task StartUpWork()
         {
-            Log.Write(l.Debug, "Internet connection available: {0}", ConnectedToInternet().ToString());
+            Log.Write(l.Debug, "Internet connection available: {0}", Win32.ConnectedToInternet());
             OfflineMode = false;
 
-            if (ConnectedToInternet())
+            if (Win32.ConnectedToInternet())
             {
-                CheckAccount();
-                
-                this.Invoke(new MethodInvoker(UpdateDetails));
+                if (Program.Account.IsAccountSet)
+                {
+                    UpdateDetails();
+
+                    ShowInTaskbar = false;
+                    Hide();
+                    ShowInTaskbar = true;
+                }
+
+                await CheckAccount();
+
+                UpdateDetails();
 
                 if (OfflineMode) return;
 
@@ -155,94 +160,92 @@ namespace FTPbox.Forms
                 CheckPaths();
                 Log.Write(l.Debug, "Paths: OK");
 
-                this.Invoke(new MethodInvoker(UpdateDetails));
+                UpdateDetails();
 
-                if (!Settings.IsNoMenusMode)
-                {
-                    AddContextMenu();
-                    RunServer();
-                }
+                var e = await Program.Account.WebInterface.CheckForUpdate();
+                chkWebInt.Checked = e;
+                labViewInBrowser.Enabled = e;
+                _changedfromcheck = false;
+
+                Program.Account.FolderWatcher.Setup();
             }
             else
             {
                 OfflineMode = true;
-                SetTray(null, new TrayTextNotificationArgs { MessageType = MessageType.Offline });
+                SetTray(null, new TrayTextNotificationArgs(MessageType.Offline));
             }
         }
 
         /// <summary>
-        /// checks if account's information used the last time has changed
+        ///     checks if account's information used the last time has changed
         /// </summary>
-        private void CheckAccount()
+        private async Task CheckAccount()
         {
-            if (!Program.Account.isAccountSet || Program.Account.isPasswordRequired)
+            if (!Program.Account.IsAccountSet || Program.Account.IsPasswordRequired)
             {
-                Log.Write(l.Info, "Will open New FTP form.");
-                Setup.JustPassword = Program.Account.isPasswordRequired;
-                
-                fSetup.ShowDialog();
+                Log.Write(l.Info, $"Opening Setup form (just for password: {Program.Account.IsPasswordRequired})");
+                Setup.JustPassword = Program.Account.IsPasswordRequired;
+
+                _fSetup.ShowDialog();
 
                 Log.Write(l.Info, "Done");
 
-                this.Show();
+                Show();
             }
-            else if (Program.Account.isAccountSet)
+            else if (Program.Account.IsAccountSet)
                 try
                 {
-                    Program.Account.Client.Connect();
+                    Program.Account.Client.ConnectionClosed +=
+                        (o, n) => Log.Write(l.Warning, "Connection closed: {0}", n.Text ?? string.Empty);
+                    Program.Account.Client.ReconnectingFailed += (o, n) => Log.Write(l.Warning, "Reconnecting failed");
+                    Program.Account.Client.ValidateCertificate += UIHelpers.CheckCertificate;
 
-                    this.Invoke(new MethodInvoker(() =>
-                    {
-                        this.ShowInTaskbar = false;
-                        this.Hide();
-                        this.ShowInTaskbar = true;
-                    }));
+                    await Program.Account.Client.Connect();
                 }
                 catch (Exception ex)
                 {
                     Log.Write(l.Warning, "Connecting failed, will retry in 30 seconds...");
-                    Common.LogError(ex);
+                    ex.LogException();
 
                     OfflineMode = true;
-                    SetTray(null, new TrayTextNotificationArgs { MessageType = MessageType.Offline });
-
-                    tRetry = new System.Threading.Timer(state => this.StartUpWork(), null, 30000, 0);                    
+                    SetTray(null, new TrayTextNotificationArgs(MessageType.Offline));
                 }
         }
-        
+
         /// <summary>
-        /// checks if paths used the last time still exist
+        ///     checks if paths used the last time still exist
         /// </summary>
         public void CheckPaths()
         {
-            if (!Program.Account.isPathsSet)
+            if (!Program.Account.IsPathsSet)
             {
-                fSetup.ShowDialog();       
-                this.Show();
+                _fSetup.ShowDialog();
+                Show();
 
-                if (!gotpaths)
+                if (!GotPaths)
                 {
                     Log.Write(l.Debug, "bb cruel world");
                     KillTheProcess();
                 }
             }
             else
-                gotpaths = true;
-            
+                GotPaths = true;
+
             Program.Account.LoadLocalFolders();
         }
-        
+
         /// <summary>
-        /// Updates the form's labels etc
+        ///     Updates the form's labels etc
         /// </summary>
         public void UpdateDetails()
         {
-            Log.Write(l.Debug, "Updating the form details");            
+            Log.Write(l.Debug, "Updating the form details");
 
             chkStartUp.Checked = CheckStartup();
 
             chkShowNots.Checked = Settings.General.Notifications;
             chkEnableLogging.Checked = Settings.General.EnableLogging;
+            chkShellMenus.Checked = Settings.General.AddContextMenu;
 
             if (Settings.General.TrayAction == TrayAction.OpenInBrowser)
                 rOpenInBrowser.Checked = true;
@@ -251,75 +254,55 @@ namespace FTPbox.Forms
             else
                 rOpenLocal.Checked = true;
 
+            //  Account Tab     //
+
             cProfiles.Items.Clear();
             cProfiles.Items.AddRange(Settings.ProfileTitles);
             cProfiles.SelectedIndex = Settings.General.DefaultProfile;
 
+            if (Program.Account.Account.SyncDirection == SyncDirection.Both)
+                rBothWaySync.Checked = true;
+            else if (Program.Account.Account.SyncDirection == SyncDirection.Remote)
+                rLocalToRemoteOnly.Checked = true;
+            else
+                rRemoteToLocalOnly.Checked = true;
+
+            tTempPrefix.Text = Program.Account.Account.TempFilePrefix;
+
+            //  About Tab       //
+
             lVersion.Text = Application.ProductVersion.Substring(0, 5) + @" Beta";
 
             //   Filters Tab    //
-            
+
             cIgnoreDotfiles.Checked = Program.Account.IgnoreList.IgnoreDotFiles;
             cIgnoreTempFiles.Checked = Program.Account.IgnoreList.IgnoreTempFiles;
+            cIgnoreOldFiles.Checked = Program.Account.IgnoreList.IgnoreOldFiles;
+            if (Program.Account.IgnoreList.LastModifiedMinimum != DateTime.MinValue)
+                dtpLastModTime.Value = Program.Account.IgnoreList.LastModifiedMinimum;
 
             //  Bandwidth tab   //
+
+            nSyncFrequency.Value = Convert.ToDecimal(Program.Account.Account.SyncFrequency);
+            if (nSyncFrequency.Value == 0) nSyncFrequency.Value = 10;
 
             if (Program.Account.Account.SyncMethod == SyncMethod.Automatic)
                 cAuto.Checked = true;
             else
                 cManually.Checked = true;
 
-            nSyncFrequency.Value = Convert.ToDecimal(Settings.DefaultProfile.Account.SyncFrequency);
-            if (nSyncFrequency.Value == 0) nSyncFrequency.Value = 10;
-
-            if (Program.Account.Account.Protocol != FtpProtocol.SFTP)
-            {
-                if (LimitUpSpeed())
-                    nUpLimit.Value = Convert.ToDecimal(Settings.General.UploadLimit);
-                if (LimitDownSpeed())
-                    nDownLimit.Value = Convert.ToDecimal(Settings.General.DownloadLimit);
-            }
-            else
-                gLimits.Visible = false;
+            nUpLimit.Value = Convert.ToDecimal(Settings.General.UploadLimit);
+            nDownLimit.Value = Convert.ToDecimal(Settings.General.DownloadLimit);
 
             Set_Language(Settings.General.Language);
 
             // Disable the following in offline mode
             chkWebInt.Enabled = !OfflineMode;
             SyncToolStripMenuItem.Enabled = !OfflineMode;
-
-            if (OfflineMode || !gotpaths) return;
-
-            bool e = Program.Account.WebInterface.Exists;
-            chkWebInt.Checked = e;
-            labViewInBrowser.Enabled = e;
-            changedfromcheck = false;
-
-            Program.Account.FolderWatcher.Setup();
-
-            // in a separate thread...
-            new Thread(() =>
-            {
-                // ...check local folder for changes
-                string cpath = Program.Account.GetCommonPath(Program.Account.Paths.Local, true);
-                Program.Account.SyncQueue.Add(new SyncQueueItem (Program.Account)
-                    {
-                        Item = new ClientItem
-                            {
-                                FullPath = Program.Account.Paths.Local,
-                                Name = Common._name(cpath),
-                                Type = ClientItemType.Folder,
-                                Size = 0x0,
-                                LastWriteTime = DateTime.MinValue
-                            },
-                        ActionType = ChangeAction.changed,
-                        SyncTo = SyncTo.Remote
-                    });
-            }).Start();
         }
 
         /// <summary>
-        /// Fill the combo-box of available translations.
+        ///     Fill the combo-box of available translations.
         /// </summary>
         private void PopulateLanguages()
         {
@@ -332,12 +315,12 @@ namespace FTPbox.Forms
         }
 
         /// <summary>
-        /// Kills the current process. Called from the tray menu.
+        ///     Kills the current process. Called from the tray menu.
         /// </summary>
         public void KillTheProcess()
         {
             if (!Settings.IsNoMenusMode)
-                RemoveFTPboxMenu();
+                ContextMenuManager.RemoveContextMenu();
 
             ExitedFromTray = true;
             Log.Write(l.Info, "Killing the process...");
@@ -345,7 +328,7 @@ namespace FTPbox.Forms
             try
             {
                 tray.Visible = false;
-                Process.GetCurrentProcess().Kill();                
+                Process.GetCurrentProcess().Kill();
             }
             catch
             {
@@ -353,44 +336,164 @@ namespace FTPbox.Forms
             }
         }
 
-        #region Recent Files
+        #region Update System
 
         /// <summary>
-        /// Load the recent items in the tray menu
+        ///     checks for an update
+        ///     called on each start-up of FTPbox.
         /// </summary>
-        private void Load_Recent()
+        private async Task CheckForUpdate()
         {
-            var list = new List<FileLogItem>(Program.Account.RecentList);
-            int lim = list.Count > 5 ? 5 : list.Count;
-            
-            for (int i = 0; i < 5; i++)
+#if PORTABLE
+            try
             {
-                if (i >= lim)
-                {
-                    recentFilesToolStripMenuItem.DropDownItems[i].Text = Common.Languages[MessageType.NotAvailable];
-                    recentFilesToolStripMenuItem.DropDownItems[i].Enabled = false;
-                    recentFilesToolStripMenuItem.DropDownItems[i].ToolTipText = string.Empty;
-                    continue;
-                }
+                var wc = new WebClient();
+                // Find out what the latest version is
+                var latest = await wc.DownloadStringTaskAsync("http://ftpbox.org/releases/version");
+                var current = Application.ProductVersion;
 
-                this.Invoke( new MethodInvoker(() =>
-                    {
-                        recentFilesToolStripMenuItem.DropDownItems[i].Text = Common._name(list[i].CommonPath);
-                        recentFilesToolStripMenuItem.DropDownItems[i].Enabled = true;
-                        var lastchange = DateTime.Compare(list[i].Local, list[i].Remote) < 0
-                                             ? list[i].Local
-                                             : list[i].Remote;
-                        recentFilesToolStripMenuItem.DropDownItems[i].ToolTipText = lastchange.FormatDate();
-                    }));
+                Log.Write(l.Debug, $"Current Version: {latest} Installed Version: {current}");
+
+                if (Regex.IsMatch(latest, @"([0-9]+\.){3,4}") && latest != current)
+                {
+                    // show dialog box for  download now, learn more and remind me next time
+                    var nvform = new newversion();
+                    newversion.Newvers = latest;
+                    newversion.DownLink = current;
+                    nvform.ShowDialog();
+                    Show();
+                }
             }
+            catch (Exception ex)
+            {
+                Log.Write(l.Debug, "Error with version checking");
+                ex.LogException();
+            }
+#elif !DEBUG
+            using (var updateManager = new UpdateManager("http://ftpbox.org/releases"))
+            {
+                var info = await updateManager.CheckForUpdate();
+
+                if (info.CurrentlyInstalledVersion == null || info.FutureReleaseEntry == null)
+                    return;
+
+                Log.Write(l.Debug, $"Current Version: {info.CurrentlyInstalledVersion.Version} Installed Version: {info.FutureReleaseEntry.Version}");
+
+                if (info.FutureReleaseEntry.Version > info.CurrentlyInstalledVersion.Version)
+                {
+                    // show dialog box for download now, learn more and remind me next time
+                    var nvform = new newversion();
+                    newversion.Newvers = info.CurrentlyInstalledVersion.Version.ToString();
+                    newversion.DownLink = info.FutureReleaseEntry.Version.ToString();
+                    nvform.ShowDialog();
+
+                    if (newversion.update)
+                    {
+                        await updateManager.UpdateApp();
+                    }
+                }
+            }
+#endif
         }
 
         #endregion
 
+        private void bTranslate_Click(object sender, EventArgs e)
+        {
+            _ftranslate.ShowDialog();
+        }
+
+        public void SetTray(object o, TrayTextNotificationArgs e)
+        {
+            try
+            {
+                // Save latest tray status
+                _lastTrayStatus = e;
+
+                switch (e.MessageType)
+                {
+                    case MessageType.Connecting:
+                    case MessageType.Reconnecting:
+                    case MessageType.Syncing:
+                        tray.Icon = Resources.syncing;
+                        tray.Text = Common.Languages[e.MessageType];
+                        break;
+                    case MessageType.Uploading:
+                    case MessageType.Downloading:
+                        tray.Icon = Resources.syncing;
+                        tray.Text = Common.Languages[MessageType.Syncing];
+                        break;
+                    case MessageType.AllSynced:
+                    case MessageType.Ready:
+                        tray.Icon = Resources.AS;
+                        tray.Text = Common.Languages[e.MessageType];
+                        break;
+                    case MessageType.Offline:
+                    case MessageType.Disconnected:
+                        tray.Icon = Resources.offline1;
+                        tray.Text = Common.Languages[e.MessageType];
+                        break;
+                    case MessageType.Listing:
+                        tray.Icon = Resources.AS;
+                        tray.Text = (Program.Account.Account.SyncMethod == SyncMethod.Automatic)
+                            ? Common.Languages[MessageType.AllSynced]
+                            : Common.Languages[MessageType.Listing];
+                        break;
+                    case MessageType.Nothing:
+                        tray.Icon = Resources.ftpboxnew;
+                        tray.Text = Common.Languages[e.MessageType];
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                ex.LogException();
+            }
+        }
+
+        private void fMain_RightToLeftLayoutChanged(object sender, EventArgs e)
+        {
+            RightToLeft = RightToLeftLayout ? RightToLeft.Yes : RightToLeft.No;
+            // Inherit manually
+            tabControl1.RightToLeftLayout = RightToLeftLayout;
+            trayMenu.RightToLeft = RightToLeftLayout ? RightToLeft.Yes : RightToLeft.No;
+
+            // Relocate controls where necessary
+            cLanguages.Location = RightToLeftLayout ? new Point(267, 19) : new Point(9, 19);
+            bTranslate.Location = RightToLeftLayout ? new Point(172, 17) : new Point(191, 17);
+            bBrowseLogs.Location = RightToLeftLayout ? new Point(172, 61) : new Point(191, 61);
+
+            bAddAccount.Location = new Point(RightToLeftLayout ? 14 : 299, 10);
+            bRemoveAccount.Location = new Point(RightToLeftLayout ? 95 : 380, 10);
+            cProfiles.Location = new Point(RightToLeftLayout ? 170 : 8, 11);
+            bConfigureAccount.Location = new Point(RightToLeftLayout ? 6 : 325, 16);
+
+            bConfigureSelectiveSync.Location = new Point(RightToLeftLayout ? 6 : 325, 19);
+            bConfigureExtensions.Location = new Point(RightToLeftLayout ? 6 : 325, 48);
+
+            //bRefresh.Location = new Point(RightToLeftLayout ? 9 : 352, 19);
+            nSyncFrequency.Location = RightToLeftLayout ? new Point(344, 89) : new Point(35, 89);
+            nDownLimit.Location = RightToLeftLayout ? new Point(344, 45) : new Point(35, 45);
+            nUpLimit.Location = RightToLeftLayout ? new Point(344, 100) : new Point(35, 100);
+
+            lVersion.Location = RightToLeftLayout ? new Point(100, 21) : new Point(272, 21);
+            linkLabel3.Location = RightToLeftLayout ? new Point(100, 44) : new Point(272, 44);
+            linkLabel4.Location = RightToLeftLayout ? new Point(100, 67) : new Point(272, 67);
+            label21.Location = RightToLeftLayout ? new Point(100, 90) : new Point(272, 90);
+            labSupportMail.Location = RightToLeftLayout ? new Point(100, 113) : new Point(272, 113);
+            label19.Location = RightToLeftLayout ? new Point(100, 136) : new Point(272, 136);
+
+            labCurVersion.Location = RightToLeftLayout ? new Point(272, 21) : new Point(100, 21);
+            labTeam.Location = RightToLeftLayout ? new Point(272, 44) : new Point(100, 44);
+            labSite.Location = RightToLeftLayout ? new Point(272, 21) : new Point(100, 71);
+            labContact.Location = RightToLeftLayout ? new Point(272, 90) : new Point(100, 90);
+            labLangUsed.Location = RightToLeftLayout ? new Point(272, 136) : new Point(100, 136);
+        }
+
         #region translations
 
         /// <summary>
-        /// Translate all controls and stuff to the given language.
+        ///     Translate all controls and stuff to the given language.
         /// </summary>
         /// <param name="lan">The language to translate to in 2-letter format</param>
         private void Set_Language(string lan)
@@ -398,7 +501,7 @@ namespace FTPbox.Forms
             Settings.General.Language = lan;
             Log.Write(l.Debug, "Changing language to: {0}", lan);
 
-            this.Text = "FTPbox | " + Common.Languages[UiControl.Options];
+            Text = "FTPbox | " + Common.Languages[UiControl.Options];
             //general tab
             tabGeneral.Text = Common.Languages[UiControl.General];
             gLinks.Text = Common.Languages[UiControl.Links];
@@ -406,12 +509,13 @@ namespace FTPbox.Forms
             rOpenInBrowser.Text = Common.Languages[UiControl.OpenUrl];
             rCopy2Clipboard.Text = Common.Languages[UiControl.CopyUrl];
             rOpenLocal.Text = Common.Languages[UiControl.OpenLocal];
-                        
-            gApp.Text = Common.Languages[UiControl.Application];                        
+
+            gApp.Text = Common.Languages[UiControl.Application];
             chkShowNots.Text = Common.Languages[UiControl.ShowNotifications];
             chkStartUp.Text = Common.Languages[UiControl.StartOnStartup];
             chkEnableLogging.Text = Common.Languages[UiControl.EnableLogging];
             bBrowseLogs.Text = Common.Languages[UiControl.ViewLog];
+            chkShellMenus.Text = Common.Languages[UiControl.AddShellMenu];
 
             //account tab
             tabAccount.Text = Common.Languages[UiControl.Account];
@@ -422,9 +526,14 @@ namespace FTPbox.Forms
             bConfigureAccount.Text = Common.Languages[UiControl.Details];
             chkWebInt.Text = Common.Languages[UiControl.UseWebUi];
             labViewInBrowser.Text = Common.Languages[UiControl.ViewInBrowser];
+            labWayOfSync.Text = Common.Languages[UiControl.WayOfSync];
+            rLocalToRemoteOnly.Text = Common.Languages[UiControl.LocalToRemoteSync];
+            rRemoteToLocalOnly.Text = Common.Languages[UiControl.RemoteToLocalSync];
+            rBothWaySync.Text = Common.Languages[UiControl.BothWaysSync];
+            labTempPrefix.Text = Common.Languages[UiControl.TempNamePrefix];
 
             //filters tab
-            tabFilters.Text = Common.Languages[UiControl.Filters];            
+            tabFilters.Text = Common.Languages[UiControl.Filters];
             gFileFilters.Text = Common.Languages[UiControl.Filters];
             bConfigureSelectiveSync.Text = Common.Languages[UiControl.Configure];
             bConfigureExtensions.Text = Common.Languages[UiControl.Configure];
@@ -464,29 +573,16 @@ namespace FTPbox.Forms
             labSupportMail.Text = "support@ftpbox.org";
             //tray
             optionsToolStripMenuItem.Text = Common.Languages[UiControl.Options];
-            recentFilesToolStripMenuItem.Text = Common.Languages[UiControl.RecentFiles];
             aboutToolStripMenuItem.Text = Common.Languages[UiControl.About];
             SyncToolStripMenuItem.Text = Common.Languages[UiControl.StartSync];
             exitToolStripMenuItem.Text = Common.Languages[UiControl.Exit];
 
-            if (trayMenu.InvokeRequired)
-                trayMenu.Invoke(new MethodInvoker(delegate
-                {
-                    foreach (ToolStripItem t in recentFilesToolStripMenuItem.DropDownItems)
-                        if (!t.Enabled)
-                            t.Text = Common.Languages[MessageType.NotAvailable];
-                }));
-            else
-            {
-                foreach (ToolStripItem t in recentFilesToolStripMenuItem.DropDownItems)
-                    if (!t.Enabled)
-                        t.Text = Common.Languages[MessageType.NotAvailable];
-            }
-
             SetTray(null, _lastTrayStatus);
 
+            _fTrayForm?.Set_Language();
+
             // Is this a right-to-left language?
-            RightToLeftLayout = new[] { "he" }.Contains(lan);
+            RightToLeftLayout = Common.RtlLanguages.Contains(lan);
 
             // Save
             Settings.General.Language = lan;
@@ -494,40 +590,42 @@ namespace FTPbox.Forms
         }
 
         /// <summary>
-        /// When the user changes to another language, translate every label etc to that language.
+        ///     When the user changes to another language, translate every label etc to that language.
         /// </summary>
         /// <param name="sender"></param>
         /// <param name="e"></param>
         private void cLanguages_SelectedIndexChanged(object sender, EventArgs e)
         {
-            string lan = cLanguages.SelectedItem.ToString().Substring(cLanguages.SelectedItem.ToString().IndexOf("(") + 1);
+            var lan =
+                cLanguages.SelectedItem.ToString()
+                    .Substring(cLanguages.SelectedItem.ToString().IndexOf("(", StringComparison.Ordinal) + 1);
             lan = lan.Substring(0, lan.Length - 1);
             try
             {
                 Set_Language(lan);
             }
-            catch { }
+            catch
+            {
+            }
         }
 
-        #endregion        
+        #endregion
 
         #region check internet connection
 
-        private bool OfflineMode = false;
-        [DllImport("wininet.dll")]        
-        private extern static bool InternetGetConnectedState(out int Description, int ReservedValue);
+        private bool OfflineMode;
 
-        public void OnNetworkChange(object sender, EventArgs e)
+        public async void OnNetworkChange(object sender, EventArgs e)
         {
             try
             {
-                if (NetworkInterface.GetIsNetworkAvailable())
+                if (Win32.ConnectedToInternet())
                 {
                     if (OfflineMode)
                     {
-                        while (!ConnectedToInternet())
-                            Thread.Sleep(5000);
-                        StartUpWork();
+                        while (!Win32.ConnectedToInternet())
+                            await Task.Delay(5000);
+                        await StartUpWork();
                     }
                     OfflineMode = false;
                 }
@@ -535,69 +633,14 @@ namespace FTPbox.Forms
                 {
                     if (!OfflineMode)
                     {
-                        Program.Account.Client.Disconnect();
-                        fswFiles.Dispose();
-                        fswFolders.Dispose();
+                        await Program.Account.Client.Disconnect();
                     }
                     OfflineMode = true;
-                    SetTray(null, new TrayTextNotificationArgs { MessageType = MessageType.Offline });
+                    SetTray(null, new TrayTextNotificationArgs(MessageType.Offline));
                 }
             }
-            catch { }
-        }
-
-        /// <summary>
-        /// Check if internet connection is available
-        /// </summary>
-        /// <returns></returns>
-        public static bool ConnectedToInternet()
-        {
-            int Desc;
-            return InternetGetConnectedState(out Desc, 0);
-        }
-
-        #endregion
-
-        #region Update System
-
-        /// <summary>
-        /// checks for an update
-        /// called on each start-up of FTPbox.
-        /// </summary>
-        private void CheckForUpdate()
-        {
-            try
+            catch
             {
-                WebClient wc = new WebClient();
-                wc.DownloadStringCompleted += (o, e) =>
-                {
-                    if (e.Cancelled || e.Error != null) return;
-
-                    var json = (Dictionary<string, string>) Newtonsoft.Json.JsonConvert.DeserializeObject(e.Result, typeof (Dictionary<string, string>));
-                    string version = json["NewVersion"];
-
-                    //  Check that the downloaded file has the correct version format, using regex.
-                    if (System.Text.RegularExpressions.Regex.IsMatch(version, @"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"))
-                    {
-                        Log.Write(l.Debug, "Current Version: {0} Installed Version: {1}", version, Application.ProductVersion);
-
-                        if (version == Application.ProductVersion) return;
-
-                        // show dialog box for  download now, learn more and remind me next time
-                        newversion nvform = new newversion() {Tag = this};
-                        newversion.newvers = json["NewVersion"];
-                        newversion.downLink = json["DownloadLink"];
-                        nvform.ShowDialog();
-                        this.Show();                
-                    }
-                };
-                // Find out what the latest version is
-                wc.DownloadStringAsync(new Uri(@"http://ftpbox.org/winversion.json"));
-            }
-            catch (Exception ex)
-            {
-                Log.Write(l.Debug, "Error with version checking");
-                Common.LogError(ex);
             }
         }
 
@@ -611,486 +654,57 @@ namespace FTPbox.Forms
             {
                 SetStartup(chkStartUp.Checked);
             }
-            catch (Exception ex) { Common.LogError(ex); }
+            catch (Exception ex)
+            {
+                ex.LogException();
+            }
         }
 
         /// <summary>
-        /// run FTPbox on windows startup
-        /// <param name="enable"><c>true</c> to add it to system startup, <c>false</c> to remove it</param>
+        ///     run FTPbox on windows startup
+        ///     <param name="enable"><c>true</c> to add it to system startup, <c>false</c> to remove it</param>
         /// </summary>
-        private void SetStartup(bool enable)
+        private static void SetStartup(bool enable)
         {
             const string runKey = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
 
-            RegistryKey startupKey = Registry.CurrentUser.OpenSubKey(runKey);
+            var startupKey = Registry.CurrentUser.OpenSubKey(runKey);
 
             if (enable)
             {
-                if (startupKey.GetValue("FTPbox") == null)
+                if (startupKey != null && startupKey.GetValue("FTPbox") == null)
                 {
                     startupKey = Registry.CurrentUser.OpenSubKey(runKey, true);
-                    startupKey.SetValue("FTPbox", Application.ExecutablePath);
-                    startupKey.Close();
+                    if (startupKey != null)
+                    {
+                        startupKey.SetValue("FTPbox", Application.ExecutablePath);
+                        startupKey.Close();
+                    }
                 }
             }
             else
             {
                 // remove startup
                 startupKey = Registry.CurrentUser.OpenSubKey(runKey, true);
-                startupKey.DeleteValue("FTPbox", false);
-                startupKey.Close();
+                if (startupKey != null)
+                {
+                    startupKey.DeleteValue("FTPbox", false);
+                    startupKey.Close();
+                }
             }
         }
 
         /// <summary>
-        /// returns true if FTPbox is set to start on windows startup
+        ///     returns true if FTPbox is set to start on windows startup
         /// </summary>
         /// <returns></returns>
-        private bool CheckStartup()
+        private static bool CheckStartup()
         {
             const string runKey = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
 
-            RegistryKey startupKey = Registry.CurrentUser.OpenSubKey(runKey);
+            var startupKey = Registry.CurrentUser.OpenSubKey(runKey);
 
-            return startupKey.GetValue("FTPbox") != null;
-        }
-        
-        #endregion
-
-        #region Speed Limits
-
-        private bool LimitUpSpeed()
-        {
-            return Settings.General.UploadLimit > 0;
-        }
-
-        private bool LimitDownSpeed()
-        {
-            return Settings.General.DownloadLimit > 0;
-        }
-        
-        #endregion        
-
-        #region context menus
-
-        private void AddContextMenu()
-        {
-            Log.Write(l.Info, "Adding registry keys for context menus");
-            string reg_path = "Software\\Classes\\*\\Shell\\FTPbox";
-            RegistryKey key = Registry.CurrentUser;
-            key.CreateSubKey(reg_path);
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            string icon_path = string.Format("\"{0}\"", Path.Combine(Application.StartupPath, "ftpboxnew.ico"));
-            string applies_to = getAppliesTo(false);
-            string command;
-
-            //Add the parent menu
-            key.SetValue("MUIVerb", "FTPbox");
-            key.SetValue("Icon", icon_path);
-            key.SetValue("SubCommands", "");
-
-            //The 'Copy link' child item
-            reg_path = "Software\\Classes\\*\\Shell\\FTPbox\\Shell\\Copy";
-            Registry.CurrentUser.CreateSubKey(reg_path);
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            key.SetValue("MUIVerb", "Copy HTTP link");
-            key.SetValue("AppliesTo", applies_to);
-            key.CreateSubKey("Command");
-            reg_path += "\\Command";
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            command = string.Format("\"{0}\" \"%1\" \"{1}\"", Application.ExecutablePath, "copy");
-            key.SetValue("", command);
-
-            //the 'Open in browser' child item
-            reg_path = "Software\\Classes\\*\\Shell\\FTPbox\\Shell\\Open";
-            Registry.CurrentUser.CreateSubKey(reg_path);
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            key.SetValue("MUIVerb", "Open file in browser");
-            key.SetValue("AppliesTo", applies_to);
-            key.CreateSubKey("Command");
-            reg_path += "\\Command";
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            command = string.Format("\"{0}\" \"%1\" \"{1}\"", Application.ExecutablePath, "open");
-            key.SetValue("", command);
-
-            //the 'Synchronize this file' child item
-            reg_path = "Software\\Classes\\*\\Shell\\FTPbox\\Shell\\Sync";
-            Registry.CurrentUser.CreateSubKey(reg_path);
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            key.SetValue("MUIVerb", "Synchronize this file");
-            key.SetValue("AppliesTo", applies_to);
-            key.CreateSubKey("Command");
-            reg_path += "\\Command";
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            command = string.Format("\"{0}\" \"%1\" \"{1}\"", Application.ExecutablePath, "sync");
-            key.SetValue("", command);
-
-            //the 'Move to FTPbox folder' child item
-            reg_path = "Software\\Classes\\*\\Shell\\FTPbox\\Shell\\Move";
-            Registry.CurrentUser.CreateSubKey(reg_path);
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            key.SetValue("MUIVerb", "Move to FTPbox folder");
-            key.SetValue("AppliesTo", getAppliesTo(true));
-            key.CreateSubKey("Command");
-            reg_path += "\\Command";
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            command = string.Format("\"{0}\" \"%1\" \"{1}\"", Application.ExecutablePath, "move");
-            key.SetValue("", command);
-
-            #region same keys for the Folder menus
-            reg_path = "Software\\Classes\\Directory\\Shell\\FTPbox";
-            key = Registry.CurrentUser;
-            key.CreateSubKey(reg_path);
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-
-            //Add the parent menu
-            key.SetValue("MUIVerb", "FTPbox");
-            key.SetValue("Icon", icon_path);
-            key.SetValue("SubCommands", "");
-
-            //The 'Copy link' child item
-            reg_path = "Software\\Classes\\Directory\\Shell\\FTPbox\\Shell\\Copy";
-            Registry.CurrentUser.CreateSubKey(reg_path);
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            key.SetValue("MUIVerb", "Copy HTTP link");
-            key.SetValue("AppliesTo", applies_to);
-            key.CreateSubKey("Command");
-            reg_path += "\\Command";
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            command = string.Format("\"{0}\" \"%1\" \"{1}\"", Application.ExecutablePath, "copy");
-            key.SetValue("", command);
-
-            //the 'Open in browser' child item
-            reg_path = "Software\\Classes\\Directory\\Shell\\FTPbox\\Shell\\Open";
-            Registry.CurrentUser.CreateSubKey(reg_path);
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            key.SetValue("MUIVerb", "Open folder in browser");
-            key.SetValue("AppliesTo", applies_to);
-            key.CreateSubKey("Command");
-            reg_path += "\\Command";
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            command = string.Format("\"{0}\" \"%1\" \"{1}\"", Application.ExecutablePath, "open");
-            key.SetValue("", command);
-
-            //the 'Synchronize this folder' child item
-            reg_path = "Software\\Classes\\Directory\\Shell\\FTPbox\\Shell\\Sync";
-            Registry.CurrentUser.CreateSubKey(reg_path);
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            key.SetValue("MUIVerb", "Synchronize this folder");
-            key.SetValue("AppliesTo", applies_to);
-            key.CreateSubKey("Command");
-            reg_path += "\\Command";
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            command = string.Format("\"{0}\" \"%1\" \"{1}\"", Application.ExecutablePath, "sync");
-            key.SetValue("", command);
-
-            //the 'Move to FTPbox folder' child item
-            reg_path = "Software\\Classes\\Directory\\Shell\\FTPbox\\Shell\\Move";
-            Registry.CurrentUser.CreateSubKey(reg_path);
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            key.SetValue("MUIVerb", "Move to FTPbox folder");
-            key.SetValue("AppliesTo", "NOT " + applies_to);
-            key.CreateSubKey("Command");
-            reg_path += "\\Command";
-            key = Registry.CurrentUser.OpenSubKey(reg_path, true);
-            command = string.Format("\"{0}\" \"%1\" \"{1}\"", Application.ExecutablePath, "move");
-            key.SetValue("", command);
-
-            #endregion
-
-            key.Close();
-        }
-
-        /// <summary>
-        /// Remove the FTPbox context menu (delete the registry files). 
-        /// Called when application is exiting.
-        /// </summary>
-        private void RemoveFTPboxMenu()
-        {
-            RegistryKey key = Registry.CurrentUser.OpenSubKey("Software\\Classes\\*\\Shell\\", true);            
-            key.DeleteSubKeyTree("FTPbox", false);
-            key.Close();
-
-            key = Registry.CurrentUser.OpenSubKey("Software\\Classes\\Directory\\Shell\\", true);
-            key.DeleteSubKeyTree("FTPbox", false);
-            key.Close();
-        }
-
-        /// <summary>
-        /// Gets the value of the AppliesTo String Value that will be put to registry and determine on which files' right-click menus each FTPbox menu item will show.
-        /// If the local path is inside a library folder, it has to check for another path (short_path), because System.ItemFolderPathDisplay will, for example, return 
-        /// Documents\FTPbox instead of C:\Users\Username\Documents\FTPbox
-        /// </summary>
-        /// <param name="isForMoveItem">If the AppliesTo value is for the Move-to-FTPbox item, it adds 'NOT' to make sure it shows anywhere but in the local syncing folder.</param>
-        /// <returns></returns>
-        private string getAppliesTo(bool isForMoveItem)
-        {
-            string path = Program.Account.Paths.Local;
-            string applies_to = (isForMoveItem) ? string.Format("NOT System.ItemFolderPathDisplay:~< \"{0}\"", path) : string.Format("System.ItemFolderPathDisplay:~< \"{0}\"", path);
-            string short_path = null;
-            var Libraries = new[] { Environment.SpecialFolder.MyDocuments, Environment.SpecialFolder.MyMusic, Environment.SpecialFolder.MyPictures, Environment.SpecialFolder.MyVideos };
-            string userpath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + @"\";
-
-            if (path.StartsWith(userpath))
-                foreach (Environment.SpecialFolder s in Libraries)            
-                    if (path.StartsWith(Environment.GetFolderPath(s)))
-                        if (s != Environment.SpecialFolder.UserProfile) //TODO: is this ok?
-                            short_path = path.Substring(userpath.Length);            
-
-            if (short_path == null) return applies_to;
-
-            applies_to += (isForMoveItem) ? string.Format(" AND NOT System.ItemFolderPathDisplay: \"*{0}*\"", short_path) : string.Format(" OR System.ItemFolderPathDisplay: \"*{0}*\"", short_path);
-
-            return applies_to;
-        }
-
-        private void RunServer()
-        {
-            var _tServer = new Thread(RunServerThread);
-            _tServer.SetApartmentState(ApartmentState.STA);
-            _tServer.Start();            
-        }
-
-        private void RunServerThread()
-        {
-            int i = 1;
-            Log.Write(l.Client, "Started the named-pipe server, waiting for clients (if any)");
-
-            var server = new Thread(ServerThread);
-            server.SetApartmentState(ApartmentState.STA);
-            server.Start();
-
-            Thread.Sleep(250);
-
-            while (i > 0)
-                if (server != null)
-                    if (server.Join(250))
-                    {
-                        Log.Write(l.Client, "named-pipe server thread finished");
-                        server = null;
-                        i--;
-                    }
-            Log.Write(l.Client, "named-pipe server thread exiting...");
-
-            RunServer();
-        }
-
-        public void ServerThread()
-        {
-            var pipeServer = new NamedPipeServerStream("FTPbox Server", PipeDirection.InOut, 5);
-            int threadID = Thread.CurrentThread.ManagedThreadId;
-
-            pipeServer.WaitForConnection();
-            
-            Log.Write(l.Client, "Client connected, id: {0}", threadID);
-
-            try
-            {
-                StreamString ss = new StreamString(pipeServer);
-
-                ss.WriteString("ftpbox");
-                string args = ss.ReadString();
-
-                ReadMessageSent fReader = new ReadMessageSent(ss, "All done!");
-
-                Log.Write(l.Client, "Reading file: \n {0} \non thread [{1}] as user {2}.", args, threadID, pipeServer.GetImpersonationUserName());
-
-                CheckClientArgs( ReadCombinedParameters(args).ToArray() );
-
-                pipeServer.RunAsClient(fReader.Start);
-            }
-            catch (IOException e)
-            {
-                Common.LogError(e);
-            }
-            pipeServer.Close();
-        }
-
-        private List<string> ReadCombinedParameters(string args)
-        {
-            List<string> r = new List<string>(args.Split('"'));
-            while(r.Contains(""))
-                r.Remove("");
-
-            return r;
-        }
-
-        private void CheckClientArgs(string[] args)
-        {
-            var list = new List<string>(args);
-            string param = list[0];
-            list.RemoveAt(0);
-
-            switch (param)
-            {
-                case "copy":
-                    CopyArgLinks(list.ToArray());
-                    break;
-                case "sync":
-                    SyncArgItems(list.ToArray());
-                    break;
-                case "open":
-                    OpenArgItemsInBrowser(list.ToArray());
-                    break;
-                case "move":
-                    MoveArgItems(list.ToArray());
-                    break;
-            }
-        }
-
-        private DateTime dtLastContextAction = DateTime.Now;
-        /// <summary>
-        /// Called when 'Copy HTTP link' is clicked from the context menus
-        /// </summary>
-        /// <param name="args"></param>
-        private void CopyArgLinks(string[] args)
-        {
-            string c = null;
-            int i = 0;
-            foreach (string s in args)
-            {
-                if (!s.StartsWith(Program.Account.Paths.Local))
-                {
-                    MessageBox.Show("You cannot use this for files that are not inside the FTPbox folder.", "FTPbox - Invalid file", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    continue;
-                }
-
-                i++;
-                //if (File.Exists(s))
-                c += Program.Account.GetHttpLink(s);
-                if (i<args.Count())
-                    c += Environment.NewLine;
-            }
-
-            if (c == null) return;
-
-            try
-            {
-                if ((DateTime.Now - dtLastContextAction).TotalSeconds < 2)
-                    Clipboard.SetText(Clipboard.GetText() + Environment.NewLine + c);
-                else                    
-                    Clipboard.SetText(c);
-                //SetTray(null, new FTPboxLib.TrayTextNotificationArgs { MessageType = FTPboxLib.MessageType.LinkCopied });
-            }
-            catch (Exception e)
-            {
-                Common.LogError(e);
-            }
-            dtLastContextAction = DateTime.Now;
-        }
-
-        /// <summary>
-        /// Called when 'Synchronize this file/folder' is clicked from the context menus
-        /// </summary>
-        /// <param name="args"></param>
-        private void SyncArgItems(string[] args)
-        {
-            foreach (string s in args)
-            {
-                Log.Write(l.Info, "Syncing local item: {0}", s);
-                if (!s.StartsWith(Program.Account.Paths.Local))
-                {
-                    MessageBox.Show("You cannot use this for files that are not inside the FTPbox folder.", "FTPbox - Invalid file", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    continue;
-                }
-                var cpath = Program.Account.GetCommonPath(s, true);
-                bool exists = Program.Account.Client.Exists(cpath);
-
-                if (Common.PathIsFile(s) && File.Exists(s))
-                {
-                    Program.Account.SyncQueue.Add(new SyncQueueItem (Program.Account)
-                    {
-                        Item = new ClientItem
-                        {
-                            FullPath = s,
-                            Name = Common._name(cpath),
-                            Type = ClientItemType.File,
-                            Size = exists ? Program.Account.Client.SizeOf(cpath) : new FileInfo(s).Length,
-                            LastWriteTime = exists ? Program.Account.Client.GetLwtOf(cpath) : File.GetLastWriteTime(s)
-                        },
-                        ActionType = ChangeAction.changed,
-                        SyncTo = exists ? SyncTo.Local : SyncTo.Remote
-                    });
-                }
-                else if (!Common.PathIsFile(s) && Directory.Exists(s))
-                {
-                    var di = new DirectoryInfo(s);
-                    Program.Account.SyncQueue.Add(new SyncQueueItem (Program.Account)
-                    {
-                        Item = new ClientItem
-                        {
-                            FullPath = di.FullName,
-                            Name = di.Name,
-                            Type = ClientItemType.Folder,
-                            Size = 0x0,
-                            LastWriteTime = DateTime.MinValue
-                        },
-                        ActionType = ChangeAction.changed,
-                        SyncTo = exists ? SyncTo.Local : SyncTo.Remote,
-                        SkipNotification = true
-                    });
-                }
-            }
-        }
-
-        /// <summary>
-        /// Called when 'Open in browser' is clicked from the context menus
-        /// </summary>
-        /// <param name="args"></param>
-        private void OpenArgItemsInBrowser(string[] args)
-        {
-            foreach (string s in args)
-            {
-                if (!s.StartsWith(Program.Account.Paths.Local))
-                {
-                    MessageBox.Show("You cannot use this for files that are not inside the FTPbox folder.", "FTPbox - Invalid file", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    continue;
-                }
-
-                string link = Program.Account.GetHttpLink(s);
-                try
-                {
-                    Process.Start(link);
-                }
-                catch (Exception e)
-                {
-                    Common.LogError(e);
-                }
-            }
-            
-            dtLastContextAction = DateTime.Now;
-        }
-
-        /// <summary>
-        /// Called when 'Move to FTPbox folder' is clicked from the context menus
-        /// </summary>
-        /// <param name="args"></param>
-        private void MoveArgItems(string[] args)
-        {
-            foreach (string s in args)
-            {
-                if (!s.StartsWith(Program.Account.Paths.Local))
-                {
-                    if (File.Exists(s))
-                    {
-                        FileInfo fi = new FileInfo(s);
-                        File.Copy(s, Path.Combine(Program.Account.Paths.Local, fi.Name));
-                    }
-                    else if (Directory.Exists(s))
-                    {
-                        foreach (string dir in Directory.GetDirectories(s, "*", SearchOption.AllDirectories))
-                        {
-                            string name = dir.Substring(s.Length);
-                            Directory.CreateDirectory(Path.Combine(Program.Account.Paths.Local, name));
-                        }
-                        foreach (string file in Directory.GetFiles(s, "*", SearchOption.AllDirectories))
-                        {
-                            string name = file.Substring(s.Length);
-                            File.Copy(file, Path.Combine(Program.Account.Paths.Local, name));
-                        }
-                    }
-                }
-            }
+            return startupKey != null && startupKey.GetValue("FTPbox") != null;
         }
 
         #endregion
@@ -1118,7 +732,7 @@ namespace FTPbox.Forms
         private void rOpenLocal_CheckedChanged(object sender, EventArgs e)
         {
             if (rOpenLocal.Checked)
-            {                
+            {
                 Settings.General.TrayAction = TrayAction.OpenLocalFile;
                 Settings.SaveGeneral();
             }
@@ -1130,23 +744,23 @@ namespace FTPbox.Forms
             Settings.SaveGeneral();
         }
 
-        private void chkWebInt_CheckedChanged(object sender, EventArgs e)
+        private async void chkWebInt_CheckedChanged(object sender, EventArgs e)
         {
-            if (!Program.Account.Client.isConnected) return; 
-            
-            if (!changedfromcheck)
+            if (!Program.Account.Client.IsConnected) return;
+
+            if (!_changedfromcheck)
             {
                 if (chkWebInt.Checked)
                     Program.Account.WebInterface.UpdatePending = true;
                 else
                     Program.Account.WebInterface.DeletePending = true;
-                
+
                 chkWebInt.Enabled = false;
 
                 if (!Program.Account.SyncQueue.Running)
-                    Program.Account.WebInterface.Update();
+                    await Program.Account.WebInterface.Update();
             }
-            changedfromcheck = false;
+            _changedfromcheck = false;
         }
 
         private void labViewInBrowser_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
@@ -1164,11 +778,25 @@ namespace FTPbox.Forms
 
         private void bBrowseLogs_Click(object sender, EventArgs e)
         {
-            string logFile = Path.Combine(Common.AppdataFolder, "Debug.html");
+            var logFile = Path.Combine(Common.AppdataFolder, "Debug.html");
 
             if (File.Exists(logFile))
                 Process.Start("explorer.exe", logFile);
+        }
 
+        private void chkShellMenus_CheckedChanged(object sender, EventArgs e)
+        {
+            Settings.General.AddContextMenu = chkShellMenus.Checked;
+            Settings.SaveGeneral();
+
+            if (chkShellMenus.Checked)
+            {
+                ContextMenuManager.AddContextMenu();
+            }
+            else
+            {
+                ContextMenuManager.RemoveContextMenu();
+            }
         }
 
         #endregion
@@ -1177,9 +805,11 @@ namespace FTPbox.Forms
 
         private void bRemoveAccount_Click(object sender, EventArgs e)
         {
-            string msg = string.Format("Are you sure you want to delete profile: {0}?",
-                   Settings.ProfileTitles[Settings.General.DefaultProfile]);
-            if (MessageBox.Show(msg, "Confirm Account Deletion", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+            var defProfile = Settings.ProfileTitles[Settings.General.DefaultProfile];
+            var msg = $"Are you sure you want to delete this profile:\n{defProfile}";
+            var result = MessageBox.Show(msg, "Confirm Account Deletion", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+            if (result == DialogResult.Yes)
             {
                 Settings.RemoveCurrentProfile();
 
@@ -1187,7 +817,7 @@ namespace FTPbox.Forms
                 Process.Start(Application.ExecutablePath);
                 KillTheProcess();
             }
-        }        
+        }
 
         private void bAddAccount_Click(object sender, EventArgs e)
         {
@@ -1222,13 +852,43 @@ namespace FTPbox.Forms
             new fAccountDetails().ShowDialog();
         }
 
+        private void rWayOfSync_CheckedChanged(object sender, EventArgs e)
+        {
+            if (rLocalToRemoteOnly.Checked)
+                Program.Account.Account.SyncDirection = SyncDirection.Remote;
+            else if (rRemoteToLocalOnly.Checked)
+                Program.Account.Account.SyncDirection = SyncDirection.Local;
+            else if (rBothWaySync.Checked)
+                Program.Account.Account.SyncDirection = SyncDirection.Both;
+            // Save changes
+            Settings.SaveProfile();
+        }
+
+        private void tTempPrefix_TextChanged(object sender, EventArgs e)
+        {
+            var val = tTempPrefix.Text;
+            if (string.IsNullOrWhiteSpace(val) || !Common.IsAllowedFilename(val))
+                return;
+            // Save new prefix
+            Program.Account.Account.TempFilePrefix = val;
+            Settings.SaveProfile();
+        }
+
+        private void tTempPrefix_Leave(object sender, EventArgs e)
+        {
+            var val = tTempPrefix.Text;
+            // Reset if the inserted value is empty or not allowed
+            if (string.IsNullOrWhiteSpace(val) || !Common.IsAllowedFilename(val))
+                tTempPrefix.Text = Program.Account.Account.TempFilePrefix;
+        }
+
         #endregion
 
         #region Filters Tab - Event Handlers
 
         private void bConfigureSelectiveSync_Click(object sender, EventArgs e)
         {
-            fSelective.ShowDialog();
+            _fSelective.ShowDialog();
         }
 
         private void bConfigureExtensions_Click(object sender, EventArgs e)
@@ -1253,22 +913,24 @@ namespace FTPbox.Forms
         {
             dtpLastModTime.Enabled = cIgnoreOldFiles.Checked;
             Program.Account.IgnoreList.IgnoreOldFiles = cIgnoreOldFiles.Checked;
-            Program.Account.IgnoreList.LastModifiedMinimum = (cIgnoreOldFiles.Checked) ? dtpLastModTime.Value : DateTime.MinValue;
+
             Program.Account.IgnoreList.Save();
         }
 
         private void dtpLastModTime_ValueChanged(object sender, EventArgs e)
         {
             Program.Account.IgnoreList.IgnoreOldFiles = cIgnoreOldFiles.Checked;
-            Program.Account.IgnoreList.LastModifiedMinimum = (cIgnoreOldFiles.Checked) ? dtpLastModTime.Value : DateTime.MinValue;
+            Program.Account.IgnoreList.LastModifiedMinimum = (cIgnoreOldFiles.Checked)
+                ? dtpLastModTime.Value
+                : DateTime.MinValue;
             Program.Account.IgnoreList.Save();
         }
 
-        #endregion 
+        #endregion
 
         #region Bandwidth Tab - Event Handlers
 
-        private void cManually_CheckedChanged(object sender, EventArgs e)
+        private async void cManually_CheckedChanged(object sender, EventArgs e)
         {
             SyncToolStripMenuItem.Enabled = cManually.Checked || !Program.Account.SyncQueue.Running;
             Program.Account.Account.SyncMethod = (cManually.Checked) ? SyncMethod.Manual : SyncMethod.Automatic;
@@ -1278,29 +940,14 @@ namespace FTPbox.Forms
             {
                 Program.Account.Account.SyncFrequency = Convert.ToInt32(nSyncFrequency.Value);
                 nSyncFrequency.Enabled = true;
+                // Schedule auto sync
+                await Program.Account.SyncQueue.ScheduleAutoSync();
             }
             else
             {
                 nSyncFrequency.Enabled = false;
-                //TODO: dispose timer?
-            }
-        }
-
-        private void cAuto_CheckedChanged(object sender, EventArgs e)
-        {
-            SyncToolStripMenuItem.Enabled = !cAuto.Checked || !Program.Account.SyncQueue.Running;
-            Program.Account.Account.SyncMethod = (!cAuto.Checked) ? SyncMethod.Manual : SyncMethod.Automatic;
-            Settings.SaveProfile();
-
-            if (Program.Account.Account.SyncMethod == SyncMethod.Automatic)
-            {
-                Program.Account.Account.SyncFrequency = Convert.ToInt32(nSyncFrequency.Value);
-                nSyncFrequency.Enabled = true;
-            }
-            else
-            {
-                nSyncFrequency.Enabled = false;
-                //TODO: dispose timer?
+                // Cancel
+                Program.Account.SyncQueue.CancelAutoSync();
             }
         }
 
@@ -1312,22 +959,14 @@ namespace FTPbox.Forms
 
         private void nDownLimit_ValueChanged(object sender, EventArgs e)
         {
-            try
-            {
-                Settings.General.DownloadLimit = Convert.ToInt32(nDownLimit.Value);
-                Settings.SaveGeneral();
-            }
-            catch { }
+            Settings.General.DownloadLimit = Convert.ToInt32(nDownLimit.Value);
+            Settings.SaveGeneral();
         }
 
         private void nUpLimit_ValueChanged(object sender, EventArgs e)
         {
-            try
-            {
-                Settings.General.UploadLimit = Convert.ToInt32(nUpLimit.Value);
-                Settings.SaveGeneral();
-            }
-            catch { }
+            Settings.General.UploadLimit = Convert.ToInt32(nUpLimit.Value);
+            Settings.SaveGeneral();
         }
 
         #endregion
@@ -1369,20 +1008,40 @@ namespace FTPbox.Forms
                 Process.Start("explorer.exe", Program.Account.Paths.Local);
         }
 
-        private void SyncToolStripMenuItem_Click(object sender, EventArgs e)
+        private void tray_MouseClick(object sender, MouseEventArgs e)
         {
-            if (!Program.Account.Client.isConnected) return;
-
-            StartRemoteSync(".");
+            if (_fTrayForm != null && !_fTrayForm.Visible && e.Button == MouseButtons.Left)
+            {
+                var mouse = MousePosition;
+                // Show the tray form
+                _fTrayForm.Show();
+                // Make sure tray form gets focus
+                _fTrayForm.Activate();
+                // Move the form to the correct position
+                _fTrayForm.PositionProperly(mouse);
+            }
         }
 
-        public bool ExitedFromTray = false;
+        private async void SyncToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            if (!Program.Account.Client.IsConnected)
+                return;
+
+            Log.Write(l.Debug, "Remote to Local sync triggered from tray menu");
+
+            Program.Account.SyncQueue.CancelAutoSync();
+
+            await Program.Account.SyncQueue.CheckRemoteToLocal();
+        }
+
+        public bool ExitedFromTray;
+
         private void fMain_FormClosing(object sender, FormClosingEventArgs e)
         {
             if (!ExitedFromTray && e.CloseReason != CloseReason.WindowsShutDown)
             {
                 e.Cancel = true;
-                this.Hide();
+                Hide();
             }
         }
 
@@ -1393,358 +1052,51 @@ namespace FTPbox.Forms
 
         private void optionsToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            this.Show();
-            this.WindowState = FormWindowState.Normal;
-            this.BringToFront();
+            Show();
+            WindowState = FormWindowState.Normal;
+            BringToFront();
         }
 
         private void aboutToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            this.Show();
+            Show();
             tabControl1.SelectedTab = tabAbout;
-        }
-
-        private void toolStripMenuItem1_Click(object sender, EventArgs e)
-        {
-            int ind = 0;
-            if (Settings.General.TrayAction == TrayAction.OpenInBrowser)
-            {
-                try
-                {
-                    Process.Start(Program.Account.LinkToRecent(ind));
-                }
-                catch { }
-
-            }
-            else if (Settings.General.TrayAction == TrayAction.CopyLink)
-            {
-                try
-                {
-                    Clipboard.SetText(Program.Account.LinkToRecent(ind));
-                    SetTray(null, new TrayTextNotificationArgs { MessageType = MessageType.LinkCopied });
-                }
-                catch { }
-            }
-            else
-                Process.Start(Program.Account.PathToRecent(ind));
-        }
-
-        private void toolStripMenuItem2_Click(object sender, EventArgs e)
-        {
-            int ind = 1;
-            if (Settings.General.TrayAction == TrayAction.OpenInBrowser)
-            {
-                try
-                {
-                    Process.Start(Program.Account.LinkToRecent(ind));
-                }
-                catch { }
-
-            }
-            else if (Settings.General.TrayAction == TrayAction.CopyLink)
-            {
-                try
-                {
-                    Clipboard.SetText(Program.Account.LinkToRecent(ind));
-                    SetTray(null, new TrayTextNotificationArgs { MessageType = MessageType.LinkCopied });
-                }
-                catch { }
-            }
-            else
-                Process.Start(Program.Account.PathToRecent(ind));
-        }
-
-        private void toolStripMenuItem3_Click(object sender, EventArgs e)
-        {
-            int ind = 2;
-            if (Settings.General.TrayAction == TrayAction.OpenInBrowser)
-            {
-                try
-                {
-                    Process.Start(Program.Account.LinkToRecent(ind));
-                }
-                catch { }
-
-            }
-            else if (Settings.General.TrayAction == TrayAction.CopyLink)
-            {
-                try
-                {
-                    Clipboard.SetText(Program.Account.LinkToRecent(ind));
-                    SetTray(null, new TrayTextNotificationArgs { MessageType = MessageType.LinkCopied });
-                }
-                catch { }
-            }
-            else
-                Process.Start(Program.Account.PathToRecent(ind));
-        }
-
-        private void toolStripMenuItem4_Click(object sender, EventArgs e)
-        {
-            int ind = 3;
-            if (Settings.General.TrayAction == TrayAction.OpenInBrowser)
-            {
-                try
-                {
-                    Process.Start(Program.Account.LinkToRecent(ind));
-                }
-                catch { }
-
-            }
-            else if (Settings.General.TrayAction == TrayAction.CopyLink)
-            {
-                try
-                {
-                    Clipboard.SetText(Program.Account.LinkToRecent(ind));
-                    SetTray(null, new TrayTextNotificationArgs { MessageType = MessageType.LinkCopied });
-                }
-                catch { }
-            }
-            else
-                Process.Start(Program.Account.PathToRecent(ind));
-        }
-
-        private void toolStripMenuItem5_Click(object sender, EventArgs e)
-        {
-            int ind = 4;
-            if (Settings.General.TrayAction == TrayAction.OpenInBrowser)
-            {
-                try
-                {
-                    Process.Start(Program.Account.LinkToRecent(ind));
-                }
-                catch { }
-
-            }
-            else if (Settings.General.TrayAction == TrayAction.CopyLink)
-            {
-                try
-                {
-                    Clipboard.SetText(Program.Account.LinkToRecent(ind));
-                    SetTray(null, new TrayTextNotificationArgs { MessageType = MessageType.LinkCopied });
-                }
-                catch { }
-            }
-            else
-                Process.Start(Program.Account.PathToRecent(ind));
         }
 
         private void tray_BalloonTipClicked(object sender, EventArgs e)
         {
-            if (string.IsNullOrWhiteSpace(link)) return;
+            if (string.IsNullOrWhiteSpace(Link)) return;
 
-            if (link.EndsWith("webint"))
-                Process.Start(link);
-            else
+            if (Link.EndsWith("webint"))
             {
-                if ((MouseButtons & MouseButtons.Right) != MouseButtons.Right)
+                Process.Start(Link);
+                return;
+            }
+            if ((MouseButtons & MouseButtons.Right) != MouseButtons.Right)
+            {
+                if (Settings.General.TrayAction == TrayAction.CopyLink)
                 {
-                    if (Settings.General.TrayAction == TrayAction.OpenInBrowser)
+                    try
                     {
-                        try
-                        {
-                            Process.Start(Program.Account.LinkToRecent());
-                        }
-                        catch
-                        {
-                            //Gotta catch 'em all 
-                        }
+                        Clipboard.SetText(Program.Account.LinkToRecent());
                     }
-                    else if (Settings.General.TrayAction == TrayAction.CopyLink)
-                    {
-                        try
-                        {
-                            Clipboard.SetText(Program.Account.LinkToRecent());
-                        }
-                        catch
-                        {
-                            //Gotta catch 'em all 
-                        }
-                        SetTray(null, new TrayTextNotificationArgs { MessageType = MessageType.LinkCopied });
-                    }
-                    else
-                    {
-                        try
-                        {
-                            Process.Start(Program.Account.PathToRecent());
-                        }
-                        catch
-                        {
-                            //Gotta catch 'em all
-                        }
-                    }
+                    catch { }
+                    SetTray(null, new TrayTextNotificationArgs(MessageType.LinkCopied));
+                    return;
                 }
-            }
-        }
-
-        #endregion                
-
-        private void bTranslate_Click(object sender, EventArgs e)
-        {
-            ftranslate.ShowDialog();
-        }
-
-        public void SetTray(object o, TrayTextNotificationArgs e)
-        {
-            try
-            {
-                // Save latest tray status
-                _lastTrayStatus = e;
-
-                string msg = null;
-                if (!string.IsNullOrWhiteSpace(e.AssossiatedFile))
+                var link = Program.Account.PathToRecent();
+                if (Settings.General.TrayAction == TrayAction.OpenInBrowser)
                 {
-                    string name = e.AssossiatedFile;
-                    // Shorten long names to be all cool with the stupid 64-character limit
-                    if (name.Length >= 15)
-                        name = string.Format("{0}...{1}",name.Substring(0,7), name.Substring(name.Length-5));
-
-                    msg = (e.MessageType == MessageType.Uploading) ? string.Format(Common.Languages[MessageType.Uploading], name) : string.Format(Common.Languages[MessageType.Downloading], name);
+                    link = Program.Account.LinkToRecent();
                 }
-
-                switch (e.MessageType)
+                try
                 {
-                    case MessageType.Uploading:
-                        tray.Icon = Properties.Resources.syncing;
-                        tray.Text = msg ?? Common.Languages[MessageType.Syncing];
-                        break;
-                    case MessageType.Downloading:
-                        tray.Icon = Properties.Resources.syncing;
-                        tray.Text = msg ?? Common.Languages[MessageType.Syncing];
-                        break;
-                    case MessageType.AllSynced:
-                        tray.Icon = Properties.Resources.AS;
-                        tray.Text = Common.Languages[MessageType.AllSynced];                        
-                        break;
-                    case MessageType.Syncing:
-                        tray.Icon = Properties.Resources.syncing;
-                        tray.Text = Common.Languages[MessageType.Syncing];                        
-                        break;
-                    case MessageType.Offline:
-                        tray.Icon = Properties.Resources.offline1;
-                        tray.Text = Common.Languages[MessageType.Offline];                        
-                        break;
-                    case MessageType.Listing:
-                        tray.Icon = Properties.Resources.AS;
-                        tray.Text = (Program.Account.Account.SyncMethod == SyncMethod.Automatic) ? Common.Languages[MessageType.AllSynced] : Common.Languages[MessageType.Listing];
-                        break;
-                    case MessageType.Connecting:
-                        tray.Icon = Properties.Resources.syncing;
-                        tray.Text = Common.Languages[MessageType.Connecting];                        
-                        break;
-                    case MessageType.Disconnected:
-                        tray.Icon = Properties.Resources.offline1;
-                        tray.Text = Common.Languages[MessageType.Disconnected];                        
-                        break;
-                    case MessageType.Reconnecting:
-                        tray.Icon = Properties.Resources.syncing;
-                        tray.Text = Common.Languages[MessageType.Reconnecting];                       
-                        break;
-                    case MessageType.Ready:
-                        tray.Icon = Properties.Resources.AS;
-                        tray.Text = Common.Languages[MessageType.Ready];                        
-                        break;
-                    case MessageType.Nothing:
-                        tray.Icon = Properties.Resources.ftpboxnew;
-                        tray.Text = Common.Languages[MessageType.Nothing];                        
-                        break;
+                    Process.Start(link);
                 }
-            }
-            catch (Exception ex)
-            {
-                Common.LogError(ex);
+                catch { }                
             }
         }
 
-        /// <summary>
-        /// Starts the remote-to-local syncing on the root folder.
-        /// Called from the timer, when remote syncing is automatic.
-        /// </summary>
-        /// <param name="state"></param>
-        public void StartRemoteSync(object state)
-        {
-            if (Program.Account.Account.SyncMethod == SyncMethod.Automatic) SyncToolStripMenuItem.Enabled = false;
-            Log.Write(l.Debug, "Starting remote sync...");
-            Program.Account.SyncQueue.Add(new SyncQueueItem (Program.Account)
-            {
-                Item = new ClientItem
-                {
-                    FullPath = (string)state,
-                    Name = (string)state,
-                    Type = ClientItemType.Folder,
-                    Size = 0x0,
-                    LastWriteTime = DateTime.Now
-                },
-                ActionType = ChangeAction.changed,
-                SyncTo = SyncTo.Local,
-                SkipNotification = true
-            });
-        }
-
-        /// <summary>
-        /// Display a messagebox with the certificate details, ask user to approve/decline it.
-        /// </summary>
-        public static void CheckCertificate(object sender, ValidateCertificateEventArgs n)
-        {
-            var msg = string.Empty;
-            // Add certificate info
-            if (Program.Account.Account.Protocol == FtpProtocol.SFTP)
-                msg += string.Format("{0,-8}\t {1}\n{2,-8}\t {3}\n", "Key:", n.Key, "Key Size:", n.KeySize);
-            else
-                msg += string.Format("{0,-25}\t {1}\n{2,-25}\t {3}\n{4,-25}\t {5}\n{6,-25}\t {7}\n\n",
-                    "Valid from:", n.ValidFrom, "Valid to:", n.ValidTo, "Serial number:", n.SerialNumber, "Algorithm:", n.Algorithm);
-
-            msg += string.Format("Fingerprint: {0}\n\n", n.Fingerprint);
-            msg += "Trust this certificate and continue?";
-
-            // Do we trust the server's certificate?
-            bool certificate_trusted = MessageBox.Show(msg, "Do you trust this certificate?", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes;
-            n.IsTrusted = certificate_trusted;
-
-            if (certificate_trusted)
-            {
-                Settings.TrustedCertificates.Add(n.Fingerprint);
-                Settings.SaveCertificates();
-            }
-        }
-
-        private void fMain_RightToLeftLayoutChanged(object sender, EventArgs e)
-        {
-            RightToLeft = RightToLeftLayout ? RightToLeft.Yes : RightToLeft.No;
-            // Inherit manually
-            tabControl1.RightToLeftLayout = RightToLeftLayout;
-            trayMenu.RightToLeft = RightToLeftLayout ? RightToLeft.Yes : RightToLeft.No;
-
-            // Relocate controls where necessary
-            cLanguages.Location = RightToLeftLayout ? new Point(267, 19) : new Point(9, 19);
-            bTranslate.Location = RightToLeftLayout ? new Point(172, 17) : new Point(191, 17);
-            bBrowseLogs.Location = RightToLeftLayout ? new Point(172, 61) : new Point(191, 61); 
-
-            bAddAccount.Location = new Point(RightToLeftLayout ? 14 : 299, 10);
-            bRemoveAccount.Location = new Point(RightToLeftLayout ? 95 : 380, 10);
-            cProfiles.Location = new Point(RightToLeftLayout ? 170 : 8, 11);
-            bConfigureAccount.Location = new Point(RightToLeftLayout ? 6 : 325, 16);
-
-            bConfigureSelectiveSync.Location = new Point(RightToLeftLayout ? 6 : 325, 19);
-            bConfigureExtensions.Location = new Point(RightToLeftLayout ? 6 : 325, 48);
-
-            //bRefresh.Location = new Point(RightToLeftLayout ? 9 : 352, 19);
-            nSyncFrequency.Location = RightToLeftLayout ? new Point(344, 89) : new Point(35, 89);
-            nDownLimit.Location = RightToLeftLayout ? new Point(344, 45) : new Point(35, 45);
-            nUpLimit.Location = RightToLeftLayout ? new Point(344, 100) : new Point(35, 100);
-
-            lVersion.Location = RightToLeftLayout ? new Point(100, 21) : new Point(272, 21);
-            linkLabel3.Location = RightToLeftLayout ? new Point(100, 44) : new Point(272, 44);
-            linkLabel4.Location = RightToLeftLayout ? new Point(100, 67) : new Point(272, 67);
-            label21.Location = RightToLeftLayout ? new Point(100, 90) : new Point(272, 90);
-            labSupportMail.Location = RightToLeftLayout ? new Point(100, 113) : new Point(272, 113);
-            label19.Location = RightToLeftLayout ? new Point(100, 136) : new Point(272, 136);
-
-            labCurVersion.Location = RightToLeftLayout ? new Point(272, 21) : new Point(100, 21);
-            labTeam.Location = RightToLeftLayout ? new Point(272, 44) : new Point(100, 44);
-            labSite.Location = RightToLeftLayout ? new Point(272, 21) : new Point(100, 71);
-            labContact.Location = RightToLeftLayout ? new Point(272, 90) : new Point(100, 90);
-            labLangUsed.Location = RightToLeftLayout ? new Point(272, 136) : new Point(100, 136);
-        }
+        #endregion
     }
 }

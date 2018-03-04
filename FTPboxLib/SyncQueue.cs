@@ -10,39 +10,34 @@
  * A queue of items to be synchronized. 
  */
 
-// #define __MonoCs__
-
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
-#if !__MonoCs__
-using FileIO = Microsoft.VisualBasic.FileIO;
-#endif
+using System.Threading.Tasks;
 
 namespace FTPboxLib
 {
     public class SyncQueue : List<SyncQueueItem>
     {
-        private List<SyncQueueItem> CompletedList = new List<SyncQueueItem>();
-        private Thread _rcThread;
-        // Timer used to schedule automatic syncing according to user's preferences
-        private Timer _tSync;
+        private Dictionary<SyncQueueItem, StatusType> _completedList = new Dictionary<SyncQueueItem, StatusType>();
 
-        private AccountController controller;
+        private readonly AccountController _controller;
 
         public SyncQueue(AccountController account)
         {
-            this.controller = account;
-            account.WebInterface.InterfaceRemoved += (o, e) =>
+            _controller = account;
+            account.WebInterface.InterfaceRemoved += async (o, e) =>
             {
-                if (account.Account.SyncMethod == SyncMethod.Automatic) SetTimer();
+                if (account.Account.SyncMethod == SyncMethod.Automatic)
+                    await ScheduleAutoSync();
                 Running = false;
             };
-            account.WebInterface.InterfaceUploaded += (o, e) =>
+            account.WebInterface.InterfaceUploaded += async (o, e) =>
             {
-                if (account.Account.SyncMethod == SyncMethod.Automatic) SetTimer();
+                if (account.Account.SyncMethod == SyncMethod.Automatic)
+                    await ScheduleAutoSync();
                 Running = false;
             };
         }
@@ -55,152 +50,135 @@ namespace FTPboxLib
         /// to the same file/folder and updates them accordingly
         /// </summary>
         /// <param name="item"></param>
-        public new void Add(SyncQueueItem item)
+        public new async Task Add(SyncQueueItem item)
         {
             Log.Write(l.Client, "adding to list: {0} lwt: {1}", item.CommonPath, item.Item.LastWriteTime);
 
-            if (item.Item.Type == ClientItemType.Folder && item.SyncTo == SyncTo.Remote)
+            if (item.Item.Type == ClientItemType.Folder && item.SyncTo == SyncTo.Remote
+                && item.ActionType != ChangeAction.deleted && item.ActionType != ChangeAction.renamed)
             {
-                if (item.ActionType != ChangeAction.deleted && item.ActionType != ChangeAction.renamed)
-                {
-                    CheckLocalFolder(item);
-                    goto StartSync;
-                }
+                await CheckLocalFolder(item);
             }
-            else if (item.ActionType == ChangeAction.deleted)
+            else
             {
-                foreach (var i in this.ToList().Where(x => x.NewCommonPath == item.CommonPath))
+                var oldItem = this.FirstOrDefault(x => x.NewCommonPath == item.CommonPath);
+                if (oldItem != default(SyncQueueItem))
                 {
-                    if (i.ActionType == ChangeAction.renamed)
+                    if (item.ActionType == ChangeAction.deleted)
                     {
-                        base[base.IndexOf(i)].ActionType = ChangeAction.deleted;
-                        base[base.IndexOf(i)].SkipNotification = true;
+                        if (oldItem.ActionType == ChangeAction.renamed)
+                        {
+                            base[IndexOf(oldItem)].ActionType = ChangeAction.deleted;
+                            base[IndexOf(oldItem)].SkipNotification = true;
+                        }
+                        else
+                            Remove(oldItem);
+                    }
+                    else if (item.ActionType == ChangeAction.renamed)
+                    {
+                        if (oldItem.ActionType == ChangeAction.renamed)
+                            base[IndexOf(oldItem)].Item.NewFullPath = item.Item.NewFullPath;
                     }
                     else
-                        base.Remove(i);
-                }
-            }
-            else if (item.ActionType == ChangeAction.renamed)
-            {
-                foreach (var i in this.ToList().Where(x => x.NewCommonPath == item.CommonPath && x.ActionType == ChangeAction.renamed))
-                {
-                    base[base.IndexOf(i)].Item.NewFullPath = item.Item.NewFullPath;
-                }
-                foreach (var i in this.ToList().Where(x => x.CommonPath == item.CommonPath))
-                {
-                    if (i.ActionType == ChangeAction.changed || i.ActionType == ChangeAction.created)
                     {
-                        // Delete old file
-                        base[base.IndexOf(i)].ActionType = ChangeAction.deleted;
-                        // Convert new item to ChangeAction : create
-                        item.ActionType = ChangeAction.created;
-                        item.Item.FullPath = item.Item.NewFullPath;
+                        if (oldItem.ActionType == ChangeAction.renamed)
+                        {
+                            base[IndexOf(oldItem)].ActionType = ChangeAction.deleted;
+                            base[IndexOf(oldItem)].AddedOn = DateTime.Now;
+                        }
+                        else
+                            Remove(oldItem);
                     }
                 }
-            }
-            else // if ChangeAction is Update
-            {
-                foreach (var i in this.ToList().Where(x => x.NewCommonPath == item.CommonPath))
+                if (item.ActionType == ChangeAction.renamed)
                 {
-                    if (i.ActionType == ChangeAction.renamed)
+                    var existing = this.FirstOrDefault(x => x.CommonPath == item.CommonPath);
+                    if (existing != default(SyncQueueItem))
                     {
-                        base[base.IndexOf(i)].ActionType = ChangeAction.deleted;
-                        base[base.IndexOf(i)].AddedOn = DateTime.Now;
+                        if (existing.ActionType == ChangeAction.changed || existing.ActionType == ChangeAction.created)
+                        {
+                            base[IndexOf(existing)].ActionType = ChangeAction.deleted;
+                            item.ActionType = ChangeAction.created;
+                            item.Item.FullPath = item.Item.NewFullPath;
+
+                            return;
+                        }
                     }
-                    else
-                        base.RemoveAt(base.IndexOf(i));
                 }
+
+                item.AddedOn = DateTime.Now;
+                base.Add(item);
             }
 
-            item.AddedOn = DateTime.Now;
-            base.Add(item);
-
-        StartSync:
             // Start syncing from the queue
-            StartQueue();
+            if (!Running)
+                await StartQueue();
+            else
+                Log.Write(l.Error, "Queue already running");
         }
 
-        public void StartQueue()
+        public async Task StartQueue()
         {
-            if (_rcThread != null && _rcThread.IsAlive) return;
+            var isAutoCheck = this.Count == 1
+                && !autoSyncCancelation.IsCancellationRequested
+                && this.ElementAt(0).Item.FullPath == ".";
 
-            _rcThread = new Thread(Run);
-            _rcThread.Start();
-        }
+            if (!isAutoCheck)
+                Notifications.ChangeTrayText(MessageType.Syncing);
 
-        /// <summary>
-        /// Start syncing from the beginning of the queue
-        /// </summary>
-        private void Run()
-        {
-            if (Running) return;
+            CancelAutoSync();
 
-            Notifications.ChangeTrayText(MessageType.Syncing);            
             Running = true;
 
-            foreach (var item in Items)
+            while (this.Count > 0)
             {
-                // do stuff here
-                switch (item.ActionType)
+                var item = this.First();
+                var status = StatusType.Waiting;
+                RemoveAt(0);
+
+                if ((_controller.Account.SyncDirection == SyncDirection.Local && item.SyncTo == SyncTo.Remote) ||
+                    (_controller.Account.SyncDirection == SyncDirection.Remote && item.SyncTo == SyncTo.Local))
                 {
-                    case ChangeAction.deleted:
-                        DeleteItem(item);
-                        break;                        
-                    case ChangeAction.renamed:
-                        RenameItem(item);
-                        break;
-                    case ChangeAction.changed:
-                    case ChangeAction.created:
-                        CheckUpdateItem(item);
-                        break;
+                    item.SkipNotification = true;
+                    status = StatusType.Skipped;
                 }
-            }
-
-            Finish();
-        }
-
-        /// <summary>
-        /// Update log, show notifications and run any pending WebUI actions
-        /// </summary>
-        private void Finish()
-        {
-            Notifications.ChangeTrayText(MessageType.AllSynced);
-
-            // Update the FileLog with all latest changes
-
-            Log.Write(l.Info, "Found in completed list:");
-            foreach (var d in CompletedList.Where(x => x.Status == StatusType.Success))
-            {
-                Log.Write(l.Info, string.Format("{0,-40} {1,-10}", d.NewCommonPath, d.Status.ToString()));
-
-                if (d.Item.Type == ClientItemType.Folder)
+                else
                 {
-                    if (d.ActionType == ChangeAction.deleted)
-                        controller.FileLog.removeFolder(d.CommonPath);
-                    else if (d.ActionType == ChangeAction.renamed)
-                        controller.FileLog.putFolder(d.NewCommonPath, d.CommonPath);
-                    else
-                        controller.FileLog.putFolder(d.CommonPath);
-                }
-                else if (d.Item.Type == ClientItemType.File)
-                {
-                    if (d.ActionType == ChangeAction.deleted)
-                        controller.RemoveFromLog(d.CommonPath);
-                    else if (d.ActionType == ChangeAction.renamed)
+                    // do stuff here
+                    switch (item.ActionType)
                     {
-                        controller.RemoveFromLog(d.CommonPath);
-                        controller.FileLog.putFile(d);
+                        case ChangeAction.deleted:
+                            status = await DeleteItem(item);
+                            break;
+                        case ChangeAction.renamed:
+                            status = await RenameItem(item);
+                            break;
+                        case ChangeAction.changed:
+                        case ChangeAction.created:
+                            status = await CheckUpdateItem(item);
+                            break;
                     }
-                    else
-                        controller.FileLog.putFile(d);
                 }
+                item.Status = status;
+                _completedList.Add(item, status);
+
+                RemoveLast(item);
+
+                if (this.Count == 0) await Task.Delay(1000);
             }
+
+            Running = false;
+
+            Settings.SaveProfile();
+
+            Notifications.ChangeTrayText(MessageType.AllSynced);
 
             // Notifications time
 
-            int folders = CompletedList.Count(x => x.Item.Type == ClientItemType.Folder && x.Status == StatusType.Success && !x.SkipNotification);
-            int files = CompletedList.Count(x => x.Item.Type == ClientItemType.File && x.Status == StatusType.Success && !x.SkipNotification);
-            int failed = CompletedList.Count(x => x.Status == StatusType.Failure);
+            var successful = _completedList.Where(x => x.Value == StatusType.Success && !x.Key.SkipNotification).Select(x => x.Key);
+            var failed = _completedList.Values.Count(status => status == StatusType.Failure);
+            var folders = successful.Count(x => x.Item.Type == ClientItemType.Folder);
+            var files = successful.Count(x => x.Item.Type == ClientItemType.File);
 
             Log.Write(l.Info, "###############################");
             Log.Write(l.Info, "{0} files successfully synced", files);
@@ -209,84 +187,136 @@ namespace FTPboxLib
             Log.Write(l.Info, "###############################");
 
             if (folders > 0 && files > 0)
+            {
                 Notifications.Show(files, folders);
-            else if (folders == 1 && files == 0)
-            {
-                var lastFolder = CompletedList.Last(x => x.Item.Type == ClientItemType.Folder && x.Status == StatusType.Success && !x.SkipNotification);
-                if (lastFolder.ActionType == ChangeAction.renamed)
-                    Notifications.Show( Common._name(lastFolder.CommonPath), ChangeAction.renamed, Common._name(lastFolder.NewCommonPath));
-                else
-                    Notifications.Show(lastFolder.Item.Name, lastFolder.ActionType, false);
-                
             }
-            else if (folders > 0 && files == 0)
-                Notifications.Show(folders, false);
-            else if (folders == 0 && files == 1)
+            else if ((folders == 1 && files == 0) || (folders == 0 && files == 1))
             {
-                var lastFile = CompletedList.Last(x => x.Item.Type == ClientItemType.File && x.Status == StatusType.Success && !x.SkipNotification);
-                if (lastFile.ActionType == ChangeAction.renamed)
-                    Notifications.Show( Common._name(lastFile.CommonPath), ChangeAction.renamed, Common._name(lastFile.NewCommonPath));
+                var lastItem = files == 1
+                    ? successful.Last(x => x.Item.Type == ClientItemType.File)
+                    : successful.Last(x => x.Item.Type == ClientItemType.Folder);
+                if (lastItem.ActionType == ChangeAction.renamed)
+                    Notifications.Show(Common._name(lastItem.CommonPath), ChangeAction.renamed,
+                        Common._name(lastItem.NewCommonPath));
                 else
-                    Notifications.Show(lastFile.Item.Name, lastFile.ActionType, true);
+                    Notifications.Show(lastItem.Item.Name, lastItem.ActionType, files == 1);
             }
-            else if (folders == 0 && files > 1)
-                Notifications.Show(files, true);
+            else if (!(files == 0 && folders == 0))
+            {
+                var count = (folders == 0) ? files : folders;
+                Notifications.Show(count, folders == 0);
+            }
 
             // print completed list
-            const string frmt = "{0, -9}{1, -20}{2, -8}{3, -8}{4, -7}";
-            string head = string.Format(frmt, "Added On", "Common Path", "Action", "SyncTo", "Status");
-            Log.Write(l.Info, head);
-            foreach (var i in CompletedList.OrderBy(x=>x.AddedOn))
-                Log.Write(l.Info, string.Format(frmt, i.AddedOn.FormatDate(), i.CommonPath, i.ActionType.ToString(), i.SyncTo.ToString(), i.Status.ToString()));
+            const string frmt = "{0, -9}{1, -9}{2, -9}{3, -10}{4}";
+            Log.Write(l.Info, string.Format(frmt, "Added On", "Action", "SyncTo", "Status", "Common Path"));
 
-            CompletedList.RemoveAll(x => x.Status != StatusType.Waiting);
-            controller.LoadLocalFolders();
+            foreach (var i in _completedList.Keys.OrderBy(x => x.AddedOn))
+                Log.Write(l.Info, string.Format(frmt, i.AddedOn.FormatDate(), i.ActionType, i.SyncTo, i.Status, i.CommonPath));
+
+            _completedList.Clear();
+
+            _controller.LoadLocalFolders();
+
+            _controller.Client.SetKeepAlive();
 
             // Check for any pending WebUI actions
-            if (controller.WebInterface.DeletePending || controller.WebInterface.UpdatePending)
-                controller.WebInterface.Update();
+            if (_controller.WebInterface.DeletePending || _controller.WebInterface.UpdatePending)
+                await _controller.WebInterface.Update();
             else
             {
-                if (controller.Account.SyncMethod == SyncMethod.Automatic) SetTimer();
+                if (_controller.Account.SyncMethod == SyncMethod.Automatic)
+                    await ScheduleAutoSync();
                 Running = false;
             }
-        }               
+        }
 
-        public void RemoveLast(StatusType status)
+        /// <summary>
+        /// Moves the last item from the queue to the CompletedList and adds it to FileLog
+        /// </summary>
+        /// <param name="item"></param>
+        public void RemoveLast(SyncQueueItem item)
         {
-            CompletedList.Add(new SyncQueueItem (controller)
-            { 
-                Status = status, 
-                Item = Next.Item, 
-                ActionType = Next.ActionType, 
-                AddedOn = Next.AddedOn, 
-                CompletedOn = DateTime.Now,
-                SkipNotification = Next.SkipNotification
-            });
+            item.CompletedOn = DateTime.Now;
 
-            RemoveAt(0);
+            // Add last item to FileLog
+            if (item.Status == StatusType.Success)
+            {
+                if (item.Item.Type == ClientItemType.Folder)
+                {
+                    switch (item.ActionType)
+                    {
+                        case ChangeAction.deleted:
+                            _controller.FileLog.RemoveFolder(item.CommonPath);
+                            break;
+                        case ChangeAction.renamed:
+                            _controller.FileLog.PutFolder(item.NewCommonPath, item.CommonPath);
+                            break;
+                        default:
+                            _controller.FileLog.PutFolder(item.CommonPath);
+                            break;
+                    }
+                }
+                else if (item.Item.Type == ClientItemType.File)
+                {
+                    switch (item.ActionType)
+                    {
+                        case ChangeAction.deleted:
+                            _controller.RemoveFromLog(item.CommonPath);
+                            break;
+                        case ChangeAction.renamed:
+                            _controller.RemoveFromLog(item.CommonPath);
+                            _controller.FileLog.PutFile(item);
+                            break;
+                        default:
+                            _controller.FileLog.PutFile(item);
+                            break;
+                    }
+                }
+            }
+        }
+
+        public async Task CheckRemoteToLocal()
+        {
+            var syncItem = new SyncQueueItem(_controller)
+            {
+                Item = new ClientItem(".", ".", ClientItemType.Folder),
+                ActionType = ChangeAction.changed,
+                SyncTo = SyncTo.Local,
+                SkipNotification = true
+            };
+            await Add(syncItem);
         }
 
         /// <summary>
         /// Used in automatic-syncing mode. Will set a timer to check the remote folder for changes
         /// every x seconds ( where x is the user-specified Profile.SyncFrequency in seconds)
         /// </summary>
-        private void SetTimer()
+        public async Task ScheduleAutoSync()
         {
-            _tSync = new Timer(state => this.Add(new SyncQueueItem (controller)
+            autoSyncCancelation = new CancellationTokenSource();
+            var delay = TimeSpan.FromSeconds(_controller.Account.SyncFrequency);
+
+            Log.Write(l.Debug, $"Scheduling auto sync for {DateTime.Now.Add(delay)}");
+
+            try
             {
-                Item = new ClientItem
-                {
-                    FullPath = ".",
-                    Name = ".",
-                    Type = ClientItemType.Folder,
-                    Size = 0x0,
-                    LastWriteTime = DateTime.Now
-                },
-                ActionType = ChangeAction.changed,
-                SyncTo = SyncTo.Local,
-                SkipNotification = true
-            }), null, 1000 * controller.Account.SyncFrequency, 0);
+                await Task.Delay(delay, autoSyncCancelation.Token);
+                Log.Write(l.Debug, $"Starting scheduled auto sync {DateTime.Now}");
+                // no cancel, proceed to sync remote-to-local
+                if (_controller.Account.SyncMethod == SyncMethod.Automatic)
+                    await CheckRemoteToLocal();
+            }
+            catch (TaskCanceledException)
+            {
+                Log.Write(l.Info, "Scheduled auto sync was canceled");
+            }
+        }
+
+        CancellationTokenSource autoSyncCancelation = new CancellationTokenSource();
+        public void CancelAutoSync()
+        {
+            autoSyncCancelation?.Cancel();
         }
 
         #endregion
@@ -296,13 +326,13 @@ namespace FTPboxLib
         /// <summary>
         /// Check a local folder and all of its subitems for changes
         /// </summary>
-        private void CheckLocalFolder(SyncQueueItem folder)
+        private async Task CheckLocalFolder(SyncQueueItem folder)
         {
-            if (!controller.ItemGetsSynced(folder.CommonPath) && folder.CommonPath != ".") return;
+            if (_controller.ItemSkipped(folder.Item) && folder.CommonPath != ".") return;
 
-            string cp = (folder.Item.FullPath == controller.Paths.Local) ? "." : folder.CommonPath;
+            var cp = (folder.Item.FullPath == _controller.Paths.Local) ? "." : folder.CommonPath;
 
-            bool cpExists = cp == "." || controller.Client.Exists(cp);
+            var cpExists = cp == "." || _controller.Client.Exists(cp);
 
             if (!cpExists)
             {
@@ -310,34 +340,32 @@ namespace FTPboxLib
                 base.Add(folder);
             }
 
-            var RemoteFilesList = cpExists ? new List<string>(controller.Client.ListRecursive(cp).Select(x => x.FullPath)) : new List<string>();
-            RemoteFilesList = RemoteFilesList.ConvertAll(x => controller.GetCommonPath(x, false));
+            var remoteFilesList = cpExists
+                ? (await _controller.Client.ListRecursive(cp)).Select(x => x.FullPath).ToList()
+                : new List<string>();
 
-            if (controller.Client.ListingFailed)
+            remoteFilesList = remoteFilesList.ConvertAll(x => _controller.GetCommonPath(x, false));
+
+            if (_controller.Client.ListingFailed)
             {
                 folder.Status = StatusType.Failure;
                 folder.CompletedOn = DateTime.Now;
-                CompletedList.Add(folder);
-                controller.Client.Reconnect();
+                _completedList.Add(folder, StatusType.Failure);
+                await _controller.Client.Reconnect();
                 return;
             }
-            
-            var di = new DirectoryInfo(folder.LocalPath);
-            foreach (var d in di.GetDirectories("*", SearchOption.AllDirectories).Where(x => !RemoteFilesList.Contains(controller.GetCommonPath(x.FullName, true))))
-            {
-                string cpath = controller.GetCommonPath(d.FullName, true);
-                if (!controller.ItemGetsSynced(cpath)) continue;
 
-                // TODO: Base add instead?
-                Add(new SyncQueueItem (controller)
+            var di = new DirectoryInfo(folder.LocalPath);
+            foreach (var d in di.GetDirectories("*", SearchOption.AllDirectories))
+            {
+                var cpath = _controller.GetCommonPath(d.FullName, true);
+
+                if (remoteFilesList.Contains(cpath)) continue;
+                if (_controller.ItemSkipped(d)) continue;
+
+                base.Add(new SyncQueueItem(_controller)
                 {
-                    Item = new ClientItem{
-                        Name = d.Name,
-                        FullPath = d.FullName,
-                        Type = ClientItemType.Folder,
-                        LastWriteTime = DateTime.Now,   // Doesn't matter
-                        Size = 0x0                      // Doesn't matter
-                    },
+                    Item = new ClientItem(d) { FullPath = d.FullName },
                     ActionType = ChangeAction.changed,
                     Status = StatusType.Waiting,
                     SyncTo = SyncTo.Remote
@@ -346,67 +374,77 @@ namespace FTPboxLib
 
             foreach (var f in di.GetFiles("*", SearchOption.AllDirectories))
             {
-                string cpath = controller.GetCommonPath(f.FullName, true);
-                if (!controller.ItemGetsSynced(cpath)) continue;
+                if (_controller.ItemSkipped(f)) continue;
 
-                if (!RemoteFilesList.Contains(cpath) || controller.FileLog.getLocal(cpath) != f.LastWriteTime)
-                    // TODO: Base add instead?
-                    Add(new SyncQueueItem(controller)
+                var sqi = new SyncQueueItem(_controller)
+                {
+                    Item = new ClientItem(f),
+                    ActionType = ChangeAction.changed,
+                    Status = StatusType.Waiting,
+                    SyncTo = SyncTo.Remote
+                };
+                var cpath = sqi.CommonPath;
+
+                if (!_controller.FileLog.Contains(cpath) && remoteFilesList.Contains(cpath))
+                {
+                    // untracked file, exists both locally and on server.
+                    var areIdentical = await _controller.Client.FilesAreIdentical(cpath, f.FullName);
+                    if (areIdentical)
                     {
-                        Item = new ClientItem
-                        {
-                            Name = f.Name,
-                            FullPath = f.FullName,
-                            Type = ClientItemType.File,
-                            LastWriteTime = File.GetLastWriteTime(f.FullName),
-                            Size = new FileInfo(f.FullName).Length
-                        },
-                        ActionType = ChangeAction.changed,
-                        Status = StatusType.Waiting,
-                        SyncTo = SyncTo.Remote
-                    });
+                        _controller.FileLog.PutFile(sqi);
+                        continue;
+                    }
+                }
+                else if (remoteFilesList.Contains(cpath) && _controller.FileLog.GetLocal(cpath) == f.LastWriteTime)
+                {
+                    // tracked file, local file unmodified.
+                    continue;
+                }
+                // local file should be uploaded.
+                base.Add(sqi);
             }
-        }        
+        }
 
         /// <summary>
         /// Delete the specified item (folder or file)
         /// </summary>
-        private void DeleteItem(SyncQueueItem item)
-        {            
+        private async Task<StatusType> DeleteItem(SyncQueueItem item)
+        {
             try
             {
                 if (item.SyncTo == SyncTo.Local)
                 {
-                    controller.FolderWatcher.Pause();   // Pause watchers
+                    _controller.FolderWatcher.Pause();   // Pause watchers
                     if (item.Item.Type == ClientItemType.File)
-                        #if __MonoCs__
-                        File.Delete(item.LocalPath);
-                        #else
-                        FileIO.FileSystem.DeleteFile(item.LocalPath, FileIO.UIOption.OnlyErrorDialogs, FileIO.RecycleOption.SendToRecycleBin);
-                        #endif
+                    {
+                        Common.RecycleOrDeleteFile(item.LocalPath);
+                    }
                     else if (item.Item.Type == ClientItemType.Folder)
-                        #if __MonoCs__
-                        Directory.Delete(item.LocalPath, true);
-                        #else
-                        FileIO.FileSystem.DeleteDirectory(item.LocalPath, FileIO.UIOption.OnlyErrorDialogs, FileIO.RecycleOption.SendToRecycleBin);
-                        #endif
-                    controller.FolderWatcher.Resume();  // Resume watchers
+                    {
+                        Common.RecycleOrDeleteFolder(item.LocalPath);
+                    }
+                    _controller.FolderWatcher.Resume();  // Resume watchers
                 }
                 else
                 {
                     if (item.Item.Type == ClientItemType.File)
-                        controller.Client.Remove(item.CommonPath);
+                    {
+                        await _controller.Client.Remove(item.CommonPath);
+                    }
                     else if (item.Item.Type == ClientItemType.Folder)
-                        controller.Client.RemoveFolder(item.CommonPath);
+                    {
+                        await _controller.Client.RemoveFolder(item.CommonPath);
+                    }
                 }
                 // Success?
-                RemoveLast(StatusType.Success);
+                item.Status = StatusType.Success;
+                return StatusType.Success;
             }
             catch (Exception ex)
             {
-                Common.LogError(ex);
-                RemoveLast(StatusType.Failure);
-                controller.FolderWatcher.Resume();      // Resume watchers
+                ex.LogException();
+                _controller.FolderWatcher.Resume();      // Resume watchers
+                return StatusType.Failure;
             }
         }
 
@@ -414,23 +452,23 @@ namespace FTPboxLib
         /// Rename the specified item (folder or file)
         /// This is only called when a local item is renamed
         /// </summary>
-        private void RenameItem(SyncQueueItem item)
+        private async Task<StatusType> RenameItem(SyncQueueItem item)
         {
             try
             {
-                Log.Write(l.Client, "Renaming: {0} into {1}", item.CommonPath, item.NewCommonPath);
+                Log.Write(l.Client, "Renaming: [{0}] -> [{1}]", item.CommonPath, item.NewCommonPath);
                 // Cannot detect remote renaming, atleast not yet
                 if (item.SyncTo == SyncTo.Remote)
-                    controller.Client.Rename(item.CommonPath, item.NewCommonPath);
+                    await _controller.Client.Rename(item.CommonPath, item.NewCommonPath);
                 // Success?
-                RemoveLast(StatusType.Success);
+                return StatusType.Success;
             }
             catch
             {
-                if (!controller.Client.Exists(item.CommonPath) && controller.Client.Exists(item.NewCommonPath))
-                    RemoveLast(StatusType.Success);
+                if (!_controller.Client.Exists(item.CommonPath) && _controller.Client.Exists(item.NewCommonPath))
+                    return StatusType.Success;
                 else
-                    RemoveLast(StatusType.Failure);
+                    return StatusType.Failure;
             }
         }
 
@@ -438,201 +476,199 @@ namespace FTPboxLib
         /// Synchronize the specified item with ActionType of changed or created.
         /// If the sync destination is our local folder, check if the item is already up-to-date first.
         /// </summary>
-        private void CheckUpdateItem(SyncQueueItem item)
+        private async Task<StatusType> CheckUpdateItem(SyncQueueItem item)
         {
-            TransferStatus _status;
+            TransferStatus status;
             if (item.Item.Type == ClientItemType.File)
             {
-                _status = (item.SyncTo == SyncTo.Remote) ? controller.Client.SafeUpload(item) : CheckExistingFile(item);
+                status = (item.SyncTo == SyncTo.Remote)
+                    ? await _controller.Client.SafeUpload(item)
+                    : await CheckExistingFile(item);
 
-                if (_status == TransferStatus.None)
-                    base.RemoveAt(0);
+                if (status == TransferStatus.None)
+                    return StatusType.Skipped;
                 else
-                    RemoveLast(_status == TransferStatus.Success ? StatusType.Success : StatusType.Failure);
-                                   
-                return;
+                    return status == TransferStatus.Success ? StatusType.Success : StatusType.Failure;
             }
             if (item.Item.Type == ClientItemType.Folder && item.SyncTo == SyncTo.Remote)
             {
                 try
                 {
-                    controller.Client.MakeFolder(item.CommonPath);
-                    RemoveLast(StatusType.Success);
+                    await _controller.Client.MakeFolder(item.CommonPath);
+                    return StatusType.Success;
                 }
                 catch
                 {
-                    RemoveLast(StatusType.Failure);
+                    return StatusType.Failure;
                 }
-                return;
             }
             // else: Folder, Sync to local
             Notifications.ChangeTrayText(MessageType.Listing);
-            var AllItems = new List<ClientItem>();
+            var allItems = new List<ClientItem>();
             Log.Write(l.Debug, "Syncing remote folder {0} to local", item.CommonPath);
 
-            if (!controller.Client.CheckWorkingDirectory())
+            if (!_controller.Client.CheckWorkingDirectory())
             {
-                RemoveLast(StatusType.Failure); 
-                return;
+                return StatusType.Failure;
             }
 
-            foreach (var f in controller.Client.ListRecursive(item.CommonPath))
+            var list = await _controller.Client.ListRecursive(item.CommonPath);
+
+            if (_controller.Client.ListingFailed)
             {
-                AllItems.Add(f);
-                string cpath = controller.GetCommonPath(f.FullPath, false);
-                string lpath = Path.Combine(controller.Paths.Local, cpath);
+                await _controller.Client.Reconnect();
+                return StatusType.Failure;
+            }
 
-                if (!controller.ItemGetsSynced(cpath)) continue;
+            foreach (var f in list)
+            {
+                allItems.Add(f);
+                var cpath = _controller.GetCommonPath(f.FullPath, false);
+                var lpath = Path.Combine(_controller.Paths.Local, cpath);
 
-                var sqi = new SyncQueueItem(controller)
-                    {
-                        Status = StatusType.Success,
-                        Item = f,
-                        ActionType = ChangeAction.created,
-                        AddedOn = DateTime.Now,
-                        CompletedOn = DateTime.Now,
-                        SyncTo = SyncTo.Local
-                    };
+                if (_controller.ItemSkipped(f)) continue;
 
-                if (f.Type == ClientItemType.Folder)
+                if (this.Any(x => x.CommonPath == cpath && x.ActionType == ChangeAction.deleted && x.SyncTo == SyncTo.Remote))
                 {
-                    if (this.Any(x => x.CommonPath == sqi.CommonPath && x.ActionType == ChangeAction.deleted && x.SyncTo == SyncTo.Remote))                    
-                        continue;
-                    
-                    if (!Directory.Exists(lpath))
-                    {
-                        controller.FolderWatcher.Pause();       // Pause Watchers
-                        Directory.CreateDirectory(lpath);
-                        controller.FolderWatcher.Resume();      // Resume Watchers
-                        sqi.CompletedOn = DateTime.Now;
-                        sqi.Status = StatusType.Success;
-                        CompletedList.Add(sqi);
-                    }
+                    //TODO: what about files when folder is scheduled for deletion?
+                    Log.Write(l.Info, $"Skipping item because it is scheduled for deletion: {cpath}");
+                    continue;
+                }
+
+                var sqi = new SyncQueueItem(_controller)
+                {
+                    Status = StatusType.Success,
+                    Item = f,
+                    ActionType = ChangeAction.created,
+                    AddedOn = DateTime.Now,
+                    CompletedOn = DateTime.Now,
+                    SyncTo = SyncTo.Local
+                };
+
+                if (f.Type == ClientItemType.Folder && !Directory.Exists(lpath))
+                {
+                    _controller.FolderWatcher.Pause();
+                    Directory.CreateDirectory(lpath);
+                    _controller.FolderWatcher.Resume();
+                    sqi.CompletedOn = DateTime.Now;
+                    sqi.Status = StatusType.Success;
+                    _completedList.Add(sqi, StatusType.Success);
+                    // Add to log
+                    _controller.FileLog.PutFolder(sqi.CommonPath);
                 }
                 else if (f.Type == ClientItemType.File)
                 {
-                    if (this.Any(x => (x.CommonPath == sqi.CommonPath || sqi.CommonPath.StartsWith(x.CommonPath))
-                                    && x.ActionType == ChangeAction.deleted && x.SyncTo == SyncTo.Remote))
-                        continue;
+                    status = !File.Exists(lpath) 
+                        ? await _controller.Client.SafeDownload(sqi) 
+                        : await CheckExistingFile(sqi);
 
-                    _status = !File.Exists(lpath) ? controller.Client.SafeDownload(sqi) : CheckExistingFile(sqi);
+                    if (status == TransferStatus.None) continue;
 
-                    if (_status == TransferStatus.None) continue;
-
-                    sqi.Status = _status == TransferStatus.Success ? StatusType.Success : StatusType.Failure;
+                    sqi.Status = status == TransferStatus.Success ? StatusType.Success : StatusType.Failure;
                     sqi.CompletedOn = DateTime.Now;
-                    CompletedList.Add(sqi);
+                    _completedList.Add(sqi, sqi.Status);
+                    // Add to log
+                    if (sqi.Status == StatusType.Success)
+                        _controller.FileLog.PutFile(sqi);
                 }
             }
-            if (controller.Client.ListingFailed)
-            {
-                RemoveLast(StatusType.Failure);
-                controller.Client.Reconnect();
-                return;
-            }
+
+            var dInfo = new DirectoryInfo(item.LocalPath);
 
             // Look for local files that should be deleted
-            foreach (var local in new DirectoryInfo(item.LocalPath).GetFiles("*", SearchOption.AllDirectories))
+            foreach (var local in dInfo.GetFiles("*", SearchOption.AllDirectories))
             {
-                var cpath = controller.GetCommonPath(local.FullName, true);
+                var cpath = _controller.GetCommonPath(local.FullName, true);
                 // continue if the file is ignored
-                if (!controller.ItemGetsSynced(cpath)) continue;
+                if (_controller.ItemSkipped(local)) continue;
                 // continue if the file was found in the remote list
-                if (AllItems.Any(x => controller.GetCommonPath(x.FullPath, false) == cpath)) continue;
+                if (allItems.Any(x => _controller.GetCommonPath(x.FullPath, false) == cpath)) continue;
                 // continue if the file is not in the log, or is changed compared to the logged data TODO: Maybe send to remote folder?
-                if (controller.FileLog.Files.All(x => x.CommonPath != cpath) ||
-                    controller.FileLog.Files.Find(x => x.CommonPath == cpath).Local != local.LastWriteTime)
-                    Add(new SyncQueueItem(controller)
-                    {
-                        Item = new ClientItem
-                        {
-                            Name = local.Name,
-                            FullPath = local.FullName,
-                            Type = ClientItemType.File,
-                            LastWriteTime = local.LastWriteTime,
-                            Size = local.Length
-                        },
-                        ActionType = ChangeAction.created,
-                        SyncTo = SyncTo.Remote
-                    });
+                var tbaItem = new SyncQueueItem(_controller)
+                {
+                    Item = new ClientItem(local),
+                    ActionType = ChangeAction.created
+                };
+
+                Log.Write(l.Info, $"File was not found on server: {cpath}");
+                Log.Write(l.Info, $"Contained in file log: {_controller.FileLog.Contains(cpath)}");
+
+                if (!_controller.FileLog.Contains(cpath) || _controller.FileLog.GetLocal(cpath) != local.LastWriteTime)
+                {
+                    Log.Write(l.Info, $"The file should be uploaded");
+                    // The file has not been uploaded yet
+                    tbaItem.Item.FullPath = local.FullName;
+                    tbaItem.ActionType = ChangeAction.created;
+                    tbaItem.SyncTo = SyncTo.Remote;
+                }
                 else
+                {
+                    Log.Write(l.Info, $"The file should be deleted");
                     // Seems like the file was deleted from the remote folder
-                    Add(new SyncQueueItem(controller)
-                    {
-                        Item = new ClientItem
-                        {
-                            FullPath = cpath,
-                            Name = local.Name,
-                            Type = ClientItemType.File,
-                            LastWriteTime = local.LastWriteTime,
-                            Size = local.Length
-                        },
-                        ActionType = ChangeAction.deleted,
-                        SyncTo = SyncTo.Local
-                    });
+                    tbaItem.Item.FullPath = cpath;
+                    tbaItem.ActionType = ChangeAction.deleted;
+                    tbaItem.SyncTo = SyncTo.Local;
+                }
+                await Add(tbaItem);
             }
             // Look for local folders that should be deleted
-            foreach (var local in new DirectoryInfo(item.LocalPath).GetDirectories("*", SearchOption.AllDirectories))
+            foreach (var local in dInfo.GetDirectories("*", SearchOption.AllDirectories))
             {
-                var cpath = controller.GetCommonPath(local.FullName, true);
+                var cpath = _controller.GetCommonPath(local.FullName, true);
                 // continue if the folder is ignored
-                if (!controller.ItemGetsSynced(cpath)) continue;
+                if (_controller.ItemSkipped(local)) continue;
                 // continue if the folder was found in the remote list
-                if (AllItems.Any(x => controller.GetCommonPath(x.FullPath, false) == cpath)) continue;
+                if (allItems.Any(x => _controller.GetCommonPath(x.FullPath, false) == cpath)) continue;
                 // continue if the folder is not in the log TODO: Maybe send to remote folder?
-                if (controller.FileLog.Folders.All(x => x != cpath)) continue;
+                if (!_controller.FileLog.Folders.Contains(cpath)) continue;
 
                 // Seems like the folder was deleted from the remote folder
-                Add(new SyncQueueItem(controller)
+                await Add(new SyncQueueItem(_controller)
                 {
-                    Item = new ClientItem
-                    {
-                        FullPath = controller.GetCommonPath(local.FullName, true),
-                        Name = local.Name,
-                        Type = ClientItemType.Folder,
-                        LastWriteTime = DateTime.MinValue, // Doesn't matter
-                        Size = 0x0 // Doesn't matter
-                    },
+                    Item = new ClientItem(local) { FullPath = _controller.GetCommonPath(local.FullName, true) },
                     ActionType = ChangeAction.deleted,
                     SyncTo = SyncTo.Local
                 });
             }
-            RemoveLast(StatusType.Success);
+            return StatusType.Success;
         }
 
         /// <summary>
         /// Check a single file and find if the remote item is newer than the local one        
         /// </summary>
-        private TransferStatus CheckExistingFile(SyncQueueItem item)
+        private async Task<TransferStatus> CheckExistingFile(SyncQueueItem item)
         {
-            DateTime locLwt = File.GetLastWriteTime(item.LocalPath);
-            DateTime remLwt = (controller.Account.Protocol != FtpProtocol.SFTP) ? controller.Client.GetLwtOf(item.CommonPath) : item.Item.LastWriteTime;
-            
-            DateTime locLog = controller.FileLog.getLocal(item.CommonPath);
-            DateTime remLog = controller.FileLog.getRemote(item.CommonPath);
+            var locLwt = File.GetLastWriteTime(item.LocalPath);
+            var remLwt = (_controller.Account.Protocol != FtpProtocol.SFTP) ? _controller.Client.TryGetModifiedTime(item.CommonPath) : item.Item.LastWriteTime;
 
-            int rResult = DateTime.Compare(remLwt, remLog);
-            int lResult = DateTime.Compare(locLwt, locLog);
-            int bResult = DateTime.Compare(remLwt, locLwt);
+            var locLog = _controller.FileLog.GetLocal(item.CommonPath);
+            var remLog = _controller.FileLog.GetRemote(item.CommonPath);
 
-            TimeSpan remDif = remLwt - remLog;
-            TimeSpan locDif = locLwt - locLog;
+            var rResult = DateTime.Compare(remLwt, remLog);
+            var lResult = DateTime.Compare(locLwt, locLog);
+            var bResult = DateTime.Compare(remLwt, locLwt);
+
+            var remDif = remLwt - remLog;
+            var locDif = locLwt - locLog;
 
             // Set to TransferStatus.None by default, incase none of the following
             // conditions are met (which means the file is up-to-date already)
-            var _status = TransferStatus.None;
+            var status = TransferStatus.None;
 
-            if (rResult > 0 && lResult > 0 && remDif.TotalSeconds > 1 && locDif.TotalSeconds > 1)
+            var remoteChanged = rResult > 0 && remDif.TotalSeconds > 1;
+
+            var localChanged = lResult > 0 && locDif.TotalSeconds > 1;
+
+            var remoteChangedMore = (remDif.TotalSeconds > locDif.TotalSeconds);
+
+            if ((remoteChanged && localChanged && remoteChangedMore) || (!localChanged && remoteChanged))
             {
-                if (remDif.TotalSeconds > locDif.TotalSeconds)
-                    _status = controller.Client.SafeDownload(item);                                    
+                status = await _controller.Client.SafeDownload(item);
             }
-            else if (rResult > 0 && remDif.TotalSeconds > 1)
-                _status = controller.Client.SafeDownload(item);
-            if (lResult > 0 && locDif.TotalSeconds > 1)
+            else if (localChanged)
             {
                 Log.Write(l.Warning, "{0} seems to have escaped startup check", item.CommonPath);
-                Add(new SyncQueueItem(controller)
+                await Add(new SyncQueueItem(_controller)
                 {
                     Item = new ClientItem
                     {
@@ -648,26 +684,11 @@ namespace FTPboxLib
                 });
             }
 
-            return _status;
+            return status;
         }
 
         #endregion
-
-        #region Properties
-
-        public IEnumerable<SyncQueueItem> Items
-        {
-            get
-            {
-                while (base.Count > 0)
-                    yield return Next;
-            }
-        }
 
         public bool Running { get; private set; }
-
-        public SyncQueueItem Next { get { return base[0]; } }
-
-        #endregion
     }
 }

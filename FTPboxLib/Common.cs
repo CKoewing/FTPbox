@@ -14,6 +14,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Utilities.Encryption;
+using System.Security.Cryptography;
 
 namespace FTPboxLib
 {
@@ -28,9 +30,13 @@ namespace FTPboxLib
 
         // All available languages and their shortcodes
         public static readonly Dictionary<string, string> LanguageList = new Dictionary<string, string> { 
-                { "en", "English" }, { "es", "Spanish" }, { "de", "German" }, { "fr", "French" }, { "nl", "Dutch" }, { "el", "Greek" }, { "it", "Italian" }, { "tr", "Turkish" }, { "pt-BR", "Brazilian Portuguese" }, { "fo", "Faroese" }, { "sv", "Swedish" }, { "sq", "Albanian" }, { "ro", "Romanian" }, { "ko", "Korean" }, { "ru", "Russian" }, { "ja", "Japanese" }, { "no", "Norwegian" }, { "hu", "Hungarian" }, { "vi", "Vietnamese" }, { "zh_HANS", "Chinese, Simplified" }, { "zh_HANT", "Chinese, Traditional" }, { "lt", "Lithuanian" }, { "da", "Dansk" }, { "pl", "Polish" }, { "hr", "Croatian" }, { "sk", "Slovak" }, { "pt", "Portuguese" }, { "gl", "Galego" }, { "th", "Thai" }, { "sl", "Slovenian" }, { "cs", "Czech" }, { "he", "Hebrew" }, { "sr", "Serbian" }, { "src", "Serbian, Cyrillic" }, { "eu", "Basque" }
+                { "en", "English" }, { "es", "Spanish" }, { "de", "German" }, { "fr", "French" }, { "nl", "Dutch" }, { "el", "Greek" }, { "it", "Italian" }, 
+                { "tr", "Turkish" }, { "pt-BR", "Brazilian Portuguese" }, { "fo", "Faroese" }, { "sv", "Swedish" }, { "sq", "Albanian" }, { "ro", "Romanian" }, 
+                { "ko", "Korean" }, { "ru", "Russian" }, { "ja", "Japanese" }, { "no", "Norwegian" }, { "hu", "Hungarian" }, { "vi", "Vietnamese" }, 
+                { "zh_HANS", "Chinese, Simplified" }, { "zh_HANT", "Chinese, Traditional" }, { "lt", "Lithuanian" }, { "da", "Dansk" }, { "pl", "Polish" }, 
+                { "hr", "Croatian" }, { "sk", "Slovak" }, { "pt", "Portuguese" }, { "gl", "Galego" }, { "th", "Thai" }, { "sl", "Slovenian" }, { "cs", "Czech" }, 
+                { "he", "Hebrew" }, { "sr", "Serbian" }, { "src", "Serbian, Cyrillic" }, { "eu", "Basque" }, { "ar", "Arabic" }, { "bg", "Bulgarian" }, { "id", "Indonesian" }
             }.OrderBy(x => x.Value).ToDictionary(x => x.Key, x => x.Value);
-
 
         #endregion
 
@@ -41,7 +47,7 @@ namespace FTPboxLib
         /// </summary>
         public static string Encrypt(string password)
         {
-            return Utilities.Encryption.AESEncryption.Encrypt(password, DecryptionPassword, DecryptionSalt);
+            return AESEncryption.Encrypt(password, DecryptionPassword, DecryptionSalt);
         }
 
         /// <summary>
@@ -49,7 +55,15 @@ namespace FTPboxLib
         /// </summary>
         public static string Decrypt(string encrypted)
         {
-            return Utilities.Encryption.AESEncryption.Decrypt(encrypted, DecryptionPassword, DecryptionSalt);
+            try
+            {
+                return AESEncryption.Decrypt(encrypted, DecryptionPassword, DecryptionSalt);
+            }
+            catch (CryptographicException ex)
+            {
+                // Failed to decrypt, ask user for password.
+                return string.Empty;
+            }
         }
 
         /// <summary>
@@ -78,41 +92,43 @@ namespace FTPboxLib
         public static string _name(string path)
         {
             if (path.Contains("/"))
-                path = path.Substring(path.LastIndexOf("/"));
+                path = path.Substring(path.LastIndexOf("/", StringComparison.Ordinal));
             if (path.Contains(@"\"))
-                path = path.Substring(path.LastIndexOf(@"\"));
+                path = path.Substring(path.LastIndexOf(@"\", StringComparison.Ordinal));
             if (path.StartsWith("/") || path.StartsWith(@"\"))
                 path = path.Substring(1);
             return path;
         }
 
         /// <summary>
-        /// Puts ~ftpb_ to the beginning of the filename in the given item's path
+        /// Puts the temp prefix to the beginning of the filename in the given item's path
         /// </summary>
         /// <param name="cpath">the given item's common path</param>
+        /// <param name="prefix">the prefix of temp files as configured for this account</param>
         /// <returns>Temporary path to item</returns>
-        public static string _tempName(string cpath)
+        public static string _tempName(string cpath, string prefix)
         {
             if (!cpath.Contains("/") && !cpath.Contains(@"\"))
-                return String.Format("~ftpb_{0}", cpath);
+                return string.Format("{0}{1}", prefix, cpath);
 
-            string parent = cpath.Substring(0, cpath.LastIndexOf("/"));
-            string temp_name = String.Format("~ftpb_{0}", _name(cpath));
+            var parent = cpath.Substring(0, cpath.LastIndexOf("/", StringComparison.Ordinal));
+            var tempName = string.Format("{0}{1}", prefix, _name(cpath));
 
-            return String.Format("{0}/{1}", parent, temp_name);
+            return string.Format("{0}/{1}", parent, tempName);
         }
 
         /// <summary>
-        /// Puts ~ftpb_ to the beginning of the filename in the given item's local path
+        /// Puts the temp prefix to the beginning of the filename in the given item's local path
         /// </summary>
         /// <param name="lpath">the given item's local path</param>
+        /// <param name="prefix">the prefix of temp files as configured for this account</param>
         /// <returns>Temporary local path to item</returns>
-        public static string _tempLocal(string lpath)
+        public static string _tempLocal(string lpath, string prefix)
         {
             lpath = lpath.ReplaceSlashes();
-            string parent = lpath.Substring(0, lpath.LastIndexOf("/"));            
+            var parent = lpath.Substring(0, lpath.LastIndexOf("/", StringComparison.Ordinal));            
 
-            return String.Format("{0}/~ftpb_{1}", parent, _name(lpath));
+            return string.Format("{0}/{1}{2}", parent, prefix, _name(lpath));
         }
 
         /// <summary>
@@ -171,27 +187,37 @@ namespace FTPboxLib
                 if (stream != null)
                     stream.Close();
             }
-            if (!String.IsNullOrWhiteSpace(name))
+            if (!string.IsNullOrWhiteSpace(name))
                 Log.Write(l.Debug, "File {0} is locked: False", name);
             return false;
         }
 
-        /// <summary>
-        /// displays details of the thrown exception in the console
-        /// </summary>
-        /// <param name="error"></param>
-        public static void LogError(Exception error)
+        public static void RecycleOrDeleteFile(string path)
         {
-            Log.Write(l.Error, "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-            Log.Write(l.Error, "Message: {0}", error.Message);
-            Log.Write(l.Error, "--");
-            Log.Write(l.Error, "StackTrace: {0}", error.StackTrace);
-            Log.Write(l.Error, "--");
-            Log.Write(l.Error, "Source: {0} Type: {1}", error.Source, error.GetType().ToString());
-            Log.Write(l.Error, "--");
-            foreach (KeyValuePair<string, string> s in error.Data)
-                Log.Write(l.Error, "key: {0} value: {1}", s.Key, s.Value);
-            Log.Write(l.Error, "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+            if (File.Exists(path))
+            {
+                #if __MonoCs__
+                File.Delete(path);
+                #else
+                Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(path,
+                    Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
+                    Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+                #endif
+            }
+        }
+
+        public static void RecycleOrDeleteFolder(string path)
+        {
+            if (Directory.Exists(path))
+            {
+                #if __MonoCs__
+                Directory.Delete(path);
+                #else
+                Microsoft.VisualBasic.FileIO.FileSystem.DeleteDirectory(path,
+                    Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
+                    Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+                #endif
+            }
         }
 
         #endregion
@@ -202,10 +228,10 @@ namespace FTPboxLib
         {
             get
             {
-                #if DEBUG   //on debug mode, build the portable version. (load settings from exe's folder 
-                    return Environment.CurrentDirectory;
-                #else       //on release, build the full version. (load settings from appdata)
-                    return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"FTPbox");
+                #if DEBUG || PORTABLE   // load settings from exe's folder?
+                return Environment.CurrentDirectory;
+                #else                   // load settings from appdata folder
+                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FTPbox");
                 #endif
             }
         }
@@ -227,6 +253,14 @@ namespace FTPboxLib
                 return string.IsNullOrWhiteSpace(Settings.General.Language) 
                     ? LanguageList.Keys.ToList().IndexOf("en") : LanguageList.Keys.ToList().IndexOf(Settings.General.Language); 
             }
+        }
+
+        /// <summary>
+        /// Languages that are written from right to left
+        /// </summary>
+        public static string[] RtlLanguages
+        {
+            get { return new[] { "he", "ar" }; }
         }
 
         #endregion
